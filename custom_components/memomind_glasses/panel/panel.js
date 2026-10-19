@@ -1,5 +1,6 @@
 // hass.callApi() prefixes "/api/" itself, so the path must not include it.
 const API_PATH = "memomind_glasses/dashboards";
+const PANEL_TAG = "memomind-glasses-panel";
 
 class MemoMindGlassesPanel extends HTMLElement {
   constructor() {
@@ -438,6 +439,59 @@ class MemoMindGlassesPanel extends HTMLElement {
   }
 
   _drawDialog() {
+    try {
+      this._drawDialogNow();
+    } catch (error) {
+      // A picker that silently stays closed is worse than a raw error.
+      console.error("MemoMind Glasses card picker:", error);
+      const node = document.createElement("div");
+      node.className = "dialog-backdrop";
+      const box = document.createElement("div");
+      box.className = "dialog";
+      const head = document.createElement("div");
+      head.className = "dialog-head";
+      const title = document.createElement("h2");
+      title.textContent = "Ajouter une carte";
+      const close = document.createElement("button");
+      close.textContent = "✕";
+      close.onclick = () => {
+        node.remove();
+        this._dialogEl = null;
+      };
+      head.append(title, close);
+      const message = document.createElement("p");
+      message.className = "error";
+      message.textContent = `Erreur du sélecteur : ${error && error.message ? error.message : error}`;
+      const fallback = document.createElement("div");
+      fallback.className = "dialog-actions";
+      const yaml = document.createElement("button");
+      yaml.textContent = "Coller un YAML";
+      yaml.onclick = () => {
+        node.remove();
+        this._dialogEl = null;
+        const state = this._dialog;
+        if (!state || !state.page) {
+          this._dialog = null;
+          this._dialogError = "";
+          this._render();
+          return;
+        }
+        state.steps = [
+          [{ key: "yaml", name: "YAML de la carte", text: true, index: 0, value: "" }],
+        ];
+        state.yaml = true;
+        state.blank = false;
+        this._drawDialog();
+      };
+      fallback.append(yaml);
+      box.append(head, message, fallback);
+      node.append(box);
+      document.body.append(node);
+      this._dialogEl = node;
+    }
+  }
+
+  _drawDialogNow() {
     if (this._dialogEl) this._dialogEl.remove();
     const state = this._dialog;
     if (!state) return;
@@ -467,7 +521,11 @@ class MemoMindGlassesPanel extends HTMLElement {
       button.textContent = entry.label;
       button.onclick = () => {
         if (entry.type === "blank") {
-          this._openLovelaceCardDialog(page, position);
+          this._openOwnDialog(state.page, state.position);
+          this._dialog.blank = true;
+          this._dialogError =
+            "Pas de sélecteur graphique ici : colle le YAML de ta carte.";
+          this._drawDialog();
           return;
         }
         state.type = entry.type;
@@ -672,6 +730,7 @@ class MemoMindGlassesPanel extends HTMLElement {
   _dialogNext() {
     const state = this._dialog;
     if (!state) return;
+    const token = this._draft;
     const values = this._dialogValues();
     const step = state.steps[state.index];
     step.forEach((field) => {
@@ -707,8 +766,21 @@ class MemoMindGlassesPanel extends HTMLElement {
       config = buildSuggestionConfig(state);
     }
     const card = { type: "", title: "", entities: [], config: null };
-    const page = state.page;
     const position = state.position;
+    let page = state.page;
+    if (!page || !_containsPage(this._draft, page)) {
+      // The draft was replaced while the form was open: retarget the page the
+      // user is actually looking at, or say so instead of saving nowhere.
+      const pages = (this._draft && this._draft.pages) || [];
+      const seen = token && token.pages ? token.pages.indexOf(state.page) : -1;
+      page = pages[seen >= 0 && seen < pages.length ? seen : 0] || null;
+    }
+    if (!page) {
+      this._closeDialog();
+      this._error = "La page n'existe plus : rouvre « + Carte ».";
+      this._render();
+      return;
+    }
     this._closeDialog();
     this._applyDialogConfig(page, card, config, position);
   }
@@ -758,7 +830,7 @@ class MemoMindGlassesPanel extends HTMLElement {
       ? Math.min(position === undefined ? page.cards.length : position, page.cards.length)
       : index;
     const previous = index !== -1 ? page.cards[index] : page.cards[at];
-    const next = this._newCard(config, previous && at < page.cards.length ? previous : null);
+    const next = this._newCard(config, previous);
     if (index !== -1) page.cards.splice(index, 1);
     page.cards.splice(at, 0, next);
     this._error = "";
@@ -820,7 +892,7 @@ class MemoMindGlassesPanel extends HTMLElement {
     addCard.className = "ghost add-card";
     addCard.textContent = "+ Carte";
     addCard.onclick = () => {
-      const cards = page.cards || [];
+        const cards = page.cards || [];
       page._fallback = null;
       this._openLovelaceDialog(page, null, cards.length);
     };
@@ -865,6 +937,17 @@ class MemoMindGlassesPanel extends HTMLElement {
 
   _draw() {
     const root = this.shadowRoot;
+    // Services re-run async_setup_entry on every reload; the browser then
+    // defines the panel class a second time and the old one starts rendering
+    // an empty element. Keep the newest instance and remove the ghosts.
+    if (window.__memoMindPanel && window.__memoMindPanel !== this) {
+      try {
+        window.__memoMindPanel.remove();
+      } catch (_) {
+        /* ignore */
+      }
+    }
+    window.__memoMindPanel = this;
     const active = root.activeElement;
     const caret =
       active && typeof active.selectionStart === "number"
@@ -1060,7 +1143,7 @@ class MemoMindGlassesPanel extends HTMLElement {
 }
 
 if (!customElements.get("memomind-glasses-panel")) {
-  customElements.define("memomind-glasses-panel", MemoMindGlassesPanel);
+  customElements.define(PANEL_TAG, MemoMindGlassesPanel);
 }
 
 const CARD_SUGGESTIONS = [
@@ -1107,6 +1190,10 @@ const CARD_SUGGESTIONS = [
 CARD_SUGGESTIONS.push(
   { type: "blank", label: "Autre carte (Home Assistant)", template: null },
 );
+
+function _containsPage(draft, page) {
+  return Boolean(draft && draft.pages && draft.pages.indexOf(page) !== -1);
+}
 
 function buildSuggestionConfig(state) {
   const config = {};
