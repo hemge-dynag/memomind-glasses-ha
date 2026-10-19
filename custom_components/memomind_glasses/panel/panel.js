@@ -1,15 +1,3 @@
-// temporary field probe: reports what this browser really runs
-(() => {
-  const src = String(document.currentScript && document.currentScript.src ? document.currentScript.src : location.href);
-  fetch("http://127.0.0.1:8766/probe", { method: "POST", body: JSON.stringify({
-    src, ua: navigator.userAgent,
-    hasLoadCardHelpers: typeof window.loadCardHelpers,
-    createCard: typeof (window.loadCardHelpers ? "?" : "?"),
-    editCardEl: Boolean(customElements.get("hui-dialog-edit-card")),
-    picker: Boolean(customElements.get("hui-card-picker")),
-  }) }).catch(() => {});
-})();
-
 // hass.callApi() prefixes "/api/" itself, so the path must not include it.
 const API_PATH = "memomind_glasses/dashboards";
 
@@ -462,9 +450,8 @@ class MemoMindGlassesPanel extends HTMLElement {
     const head = document.createElement("div");
     head.className = "dialog-head";
     const title = document.createElement("h2");
-    title.textContent = state.position < (page.cards || []).length
-      ? "Modifier la carte"
-      : "Ajouter une carte";
+    const slots = (state.page && state.page.cards) || [];
+    title.textContent = state.position < slots.length ? "Modifier la carte" : "Ajouter une carte";
     const close = document.createElement("button");
     close.textContent = "✕";
     close.title = "Fermer";
@@ -588,7 +575,6 @@ class MemoMindGlassesPanel extends HTMLElement {
     });
     document.body.append(backdrop);
     this._dialogEl = backdrop;
-    fetch("http://127.0.0.1:8766/drawn", { method: "POST", body: JSON.stringify({ shadow: Boolean(this.shadowRoot), steps: (this._dialog.steps || []).length, blank: Boolean(this._dialog.blank) }) }).catch(() => {});
   }
 
   _openLovelaceCardDialog(page, position) {
@@ -768,10 +754,13 @@ class MemoMindGlassesPanel extends HTMLElement {
   _applyDialogConfig(page, card, config, position) {
     page.cards = page.cards || [];
     const index = card ? page.cards.indexOf(card) : -1;
-    const at = index === -1 ? (position === undefined ? page.cards.length : position) : index;
-    const previous = index !== -1 ? page.cards[index] : page.cards[position];
+    const at = index === -1
+      ? Math.min(position === undefined ? page.cards.length : position, page.cards.length)
+      : index;
+    const previous = index !== -1 ? page.cards[index] : page.cards[at];
+    const next = this._newCard(config, previous && at < page.cards.length ? previous : null);
     if (index !== -1) page.cards.splice(index, 1);
-    page.cards.splice(at, 0, this._newCard(config, previous));
+    page.cards.splice(at, 0, next);
     this._error = "";
     this._markDirty();
   }
@@ -831,10 +820,9 @@ class MemoMindGlassesPanel extends HTMLElement {
     addCard.className = "ghost add-card";
     addCard.textContent = "+ Carte";
     addCard.onclick = () => {
-      fetch("http://127.0.0.1:8766/click", { method: "POST", body: "add-card" }).catch(() => {});
-      page.cards = page.cards || [];
+      const cards = page.cards || [];
       page._fallback = null;
-      this._openLovelaceDialog(page, null, page.cards.length);
+      this._openLovelaceDialog(page, null, cards.length);
     };
     strip.append(addCard);
     box.append(strip);
