@@ -340,120 +340,367 @@ class MemoMindGlassesPanel extends HTMLElement {
     );
   }
 
-  async _element(name) {
-    if (customElements.get(name)) return true;
-    try {
-      if (typeof window.loadCardHelpers === "function") await window.loadCardHelpers();
-    } catch (_) {
-      /* ignore */
-    }
-    if (customElements.get(name)) return true;
-    await new Promise((resolve) => setTimeout(resolve, 400));
-    return Boolean(customElements.get(name));
-  }
-
   async _openLovelaceDialog(page, card, position) {
     const existing = card && card.config && card.config.type ? card.config : null;
     if (!existing) {
-      if (!(await this._openCreateDialog(page, card, position))) {
-        this._fallbackCard(page, card, position);
-      }
+      this._openOwnDialog(page, position);
       return;
     }
-    const readyEdit = await this._element("hui-dialog-edit-card");
-    if (readyEdit) {
-      const dialog = document.createElement("hui-dialog-edit-card");
+    const editDialog = await this._showLovelaceDialog(page, existing, position);
+    if (!editDialog) this._fallbackCard(page, card, position);
+  }
+
+  async _showLovelaceDialog(page, config, position) {
+    const names = ["hui-dialog-edit-card", "hui-dialog-create-card"];
+    for (const name of names) {
+      if (!(await this._loadElement(name))) continue;
+      const dialog = document.createElement(name);
       dialog.hass = this._hass;
       dialog.lovelaceConfig = this._lovelaceConfig();
-      dialog.cardConfig = JSON.parse(JSON.stringify(existing));
-      dialog.saveCardConfig = (config) => {
-        if (!config || !config.type) return;
-        this._applyDialogConfig(page, card, config, position);
+      const save = (next) => {
+        if (!next || !next.type) return;
+        this._closeLovelaceDialog();
+        this._applyDialogConfig(page, null, next, position);
       };
+      if (name === "hui-dialog-edit-card") {
+        dialog.cardConfig = JSON.parse(JSON.stringify(config));
+        dialog.saveCardConfig = save;
+      } else {
+        dialog.saveConfig = save;
+        dialog.showDialog({ path: position === undefined ? [] : [position] });
+      }
       document.body.append(dialog);
-      dialog.addEventListener("dialog-closed", () => dialog.remove(), { once: true });
+      this._lovelaceDialog = dialog;
+      dialog.addEventListener(
+        "dialog-closed",
+        () => {
+          if (this._lovelaceDialog === dialog) this._lovelaceDialog = null;
+          dialog.remove();
+        },
+        { once: true },
+      );
       if (typeof dialog.show === "function") dialog.show();
+      return true;
+    }
+    return false;
+  }
+
+  _closeLovelaceDialog() {
+    if (this._lovelaceDialog) this._lovelaceDialog.remove();
+    this._lovelaceDialog = null;
+  }
+
+  _openOwnDialog(page, position) {
+    if (this._dialog) this._dialog.remove();
+    this._dialog = { page, position, type: "entities", steps: [], index: 0 };
+    this._dialogError = "";
+    this._drawDialog();
+  }
+
+  _drawDialog() {
+    if (this._dialogEl) this._dialogEl.remove();
+    const state = this._dialog;
+    if (!state) return;
+    const backdrop = document.createElement("div");
+    backdrop.className = "dialog-backdrop";
+    const dialog = document.createElement("div");
+    dialog.className = "dialog";
+    dialog.setAttribute("role", "dialog");
+
+    const head = document.createElement("div");
+    head.className = "dialog-head";
+    const title = document.createElement("h2");
+    title.textContent = "Ajouter une carte";
+    const close = document.createElement("button");
+    close.textContent = "✕";
+    close.title = "Fermer";
+    close.onclick = () => this._closeDialog();
+    head.append(title, close);
+    dialog.append(head);
+
+    const gallery = document.createElement("div");
+    gallery.className = "gallery";
+    CARD_SUGGESTIONS.forEach((entry) => {
+      const button = document.createElement("button");
+      button.className = "gallery-item";
+      button.textContent = entry.label;
+      button.onclick = () => {
+        state.type = entry.type;
+        state.blank = !entry.template;
+        state.steps = entry.template
+          ? [entry.template.map((field, index) => ({ ...field, index, value: field.value ?? field.default ?? "" }))]
+          : [];
+        state.index = 0;
+        this._dialogError = "";
+        this._drawDialog();
+      };
+      gallery.append(button);
+    });
+    dialog.append(gallery);
+
+    if (state.steps.length) {
+      const step = state.steps[state.index];
+      const fields = document.createElement("div");
+      fields.className = "fields";
+      step.forEach((field) => {
+        const label = document.createElement("label");
+        label.className = "field";
+        const text = document.createElement("span");
+        text.textContent = field.name;
+        let input;
+        if (field.entities) {
+          input = this._entityPicker(field.entities);
+        } else if (field.text) {
+          input = document.createElement("textarea");
+          input.rows = 4;
+        } else {
+          input = document.createElement("input");
+          input.type = "text";
+          input.placeholder = field.placeholder || "";
+        }
+        if (typeof field.default === "string") input.value = field.default;
+        input.dataset.key = field.key;
+        input.dataset.text = field.text ? "1" : "";
+        input.oninput = () => {
+          step[field.index].value = input.value;
+        };
+        label.append(text, input);
+        fields.append(label);
+      });
+      dialog.append(fields);
+
+      const actions = document.createElement("div");
+      actions.className = "dialog-actions";
+      if (state.index > 0) {
+        const back = document.createElement("button");
+        back.textContent = "← Retour";
+        back.onclick = () => {
+          state.index -= 1;
+          this._drawDialog();
+        };
+        actions.append(back);
+      }
+      const next = document.createElement("button");
+      next.className = "primary";
+      next.textContent = state.index === state.steps.length - 1 ? "Ajouter la carte" : "Continuer";
+      next.onclick = () => this._dialogNext();
+      const cancel = document.createElement("button");
+      cancel.textContent = "Annuler";
+      cancel.onclick = () => this._closeDialog();
+      actions.append(next, cancel);
+      dialog.append(actions);
+    } else if (state.blank) {
+      const hint = document.createElement("p");
+      hint.className = "hint";
+      hint.textContent =
+        "Cette carte n'a pas de formulaire intégré : ajoute-la avec Home Assistant, puis reviens ici.";
+      dialog.append(hint);
+    }
+
+    if (this._dialogError) {
+      const error = document.createElement("div");
+      error.className = "error";
+      error.textContent = this._dialogError;
+      dialog.append(error);
+    }
+
+    if (!state.steps.length) {
+      const actions = document.createElement("div");
+      actions.className = "dialog-actions";
+      if (state.blank) {
+        const toggle = document.createElement("button");
+        toggle.textContent = "Coller un YAML";
+        toggle.onclick = () => {
+          state.steps = [[{ key: "yaml", name: "YAML de la carte", text: true, index: 0, value: "" }]];
+          state.yaml = true;
+          this._dialogError = "";
+          this._drawDialog();
+        };
+        actions.append(toggle);
+      }
+      const cancel = document.createElement("button");
+      cancel.textContent = "Fermer";
+      cancel.onclick = () => this._closeDialog();
+      actions.append(cancel);
+      dialog.append(actions);
+    }
+
+    backdrop.append(dialog);
+    backdrop.addEventListener("click", (event) => {
+      if (event.target === backdrop) this._closeDialog();
+    });
+    document.body.append(backdrop);
+    this._dialogEl = backdrop;
+  }
+
+  _entityPicker(initial) {
+    const wrap = document.createElement("div");
+    wrap.className = "entity-picker";
+    const chips = document.createElement("div");
+    chips.className = "chips";
+    const ids = initial.slice();
+    const drawChips = () => {
+      chips.innerHTML = "";
+      ids.forEach((id, index) => {
+        const chip = document.createElement("span");
+        chip.className = "chip";
+        const state = this._hass.states[id];
+        chip.textContent = state
+          ? `${state.attributes.friendly_name || id} · ${state.state}`
+          : id;
+        const remove = document.createElement("button");
+        remove.textContent = "✕";
+        remove.onclick = () => {
+          ids.splice(index, 1);
+          drawChips();
+        };
+        chip.append(remove);
+        chips.append(chip);
+      });
+    };
+    drawChips();
+    const input = document.createElement("input");
+    input.type = "search";
+    input.placeholder = "Filtrer les entités…";
+    input.oninput = () => {
+      list.innerHTML = "";
+      const query = input.value.trim().toLowerCase();
+      Object.values(this._hass.states)
+        .filter((state) => state && state.entity_id)
+        .filter((state) => {
+          if (!query) return false;
+          const name = String(state.attributes.friendly_name || "").toLowerCase();
+          return state.entity_id.includes(query) || name.includes(query);
+        })
+        .slice(0, 40)
+        .forEach((state) => {
+          const item = document.createElement("button");
+          item.className = "option";
+          item.textContent = `${state.attributes.friendly_name || state.entity_id}`;
+          const small = document.createElement("small");
+          small.textContent = state.entity_id;
+          item.append(small);
+          item.onclick = () => {
+            ids.push(state.entity_id);
+            drawChips();
+            input.value = "";
+            list.innerHTML = "";
+          };
+          list.append(item);
+        });
+      wrap.dataset.value = JSON.stringify(ids);
+    };
+    const list = document.createElement("div");
+    list.className = "options";
+    wrap.append(chips, input, list);
+    wrap.value = () => {
+      const rows = ids.map((id) => {
+        const state = this._hass.states[id];
+        const name = state ? String(state.attributes.friendly_name || "") : "";
+        return name ? { entity: id, name } : id;
+      });
+      return rows;
+    };
+    return wrap;
+  }
+
+  _dialogValues() {
+    const state = this._dialog;
+    const values = {};
+    if (!state || !this._dialogEl) return values;
+    this._dialogEl.querySelectorAll("[data-key]").forEach((node) => {
+      const raw = typeof node.value === "function" ? node.value() : node.value;
+      values[node.dataset.key] =
+        node.dataset && node.dataset.text ? String(raw || "") : raw;
+    });
+    return values;
+  }
+
+  _dialogNext() {
+    const state = this._dialog;
+    if (!state) return;
+    const values = this._dialogValues();
+    const step = state.steps[state.index];
+    step.forEach((field) => {
+      if (field.key in values) field.value = values[field.key];
+    });
+    const missing = step.find((field) => {
+      if (!field.required) return false;
+      const value = field.value;
+      if (Array.isArray(value)) return !value.length;
+      return !String(value || "").trim();
+    });
+    if (missing) {
+      this._dialogError = `Renseigne « ${missing.name} ».`;
+      this._drawDialog();
       return;
     }
-    if (await this._openCreateDialog(page, card, position)) return;
-    this._fallbackCard(page, card, position);
-  }
-
-  async _openCreateDialog(page, card, position) {
-    if (!(await this._element("hui-dialog-create-card"))) return false;
-    const dialog = document.createElement("hui-dialog-create-card");
-    dialog.hass = this._hass;
-    dialog.lovelaceConfig = this._lovelaceConfig();
-    dialog.saveConfig = (config) => {
-      if (!config || !config.type) return;
-      this._applyDialogConfig(page, card, config, position);
-    };
-    document.body.append(dialog);
-    dialog.addEventListener("dialog-closed", () => dialog.remove(), { once: true });
-    const path = page.cards.indexOf(card);
-    dialog.showDialog({ path: path === -1 ? [] : [path] });
-    return true;
-  }
-
-  _fallbackCard(page, card, position) {
-    const cards = page.cards || [];
-    const index = cards.indexOf(card);
-    if (index !== -1) cards.splice(index, 1);
-    this._error =
-      "Le sélecteur de cartes de Home Assistant n'est pas disponible ici. " +
-      "Ouvre l'onglet Carte d'un dashboard Lovelace, ajoute ta carte, colle son YAML ci-dessous.";
-    page._fallback = {
-      at: index === -1 ? (position === undefined ? cards.length : position) : index,
-      text: "",
-    };
-    this._markDirty();
-  }
-
-  _fallbackNode(page) {
-    const box = document.createElement("div");
-    box.className = "yaml";
-    const area = document.createElement("textarea");
-    area.spellcheck = false;
-    area.rows = 10;
-    area.placeholder =
-      "type: entities\nentities:\n  - light.salon\n  - sensor.temperature";
-    area.value = page._fallback.text || "";
-    area.oninput = () => {
-      page._fallback.text = area.value;
-    };
-    const apply = document.createElement("button");
-    apply.className = "primary";
-    apply.textContent = "Ajouter la carte";
-    apply.onclick = () => {
-      const parsed = parseCardYaml(area.value);
-      if (!parsed) {
-        this._error = "YAML de carte invalide.";
-      } else {
-        page.cards = page.cards || [];
-        page.cards.splice(
-          Math.min(page._fallback.at, page.cards.length),
-          0,
-          this._newCard(parsed),
-        );
-        page._fallback = null;
-        this._error = "";
+    if (state.index < state.steps.length - 1) {
+      state.index += 1;
+      this._dialogError = "";
+      this._drawDialog();
+      return;
+    }
+    let config;
+    if (state.yaml) {
+      const values = this._dialogValues();
+      config = parseCardYaml(values.yaml || "");
+      if (!config) {
+        this._dialogError = "YAML de carte invalide (il doit contenir au moins « type: »).";
+        this._drawDialog();
+        return;
       }
-      this._markDirty();
+    } else {
+      config = buildSuggestionConfig(state);
+    }
+    const card = { type: "", title: "", entities: [], config: null };
+    const page = state.page;
+    const position = state.position;
+    this._closeDialog();
+    this._applyDialogConfig(page, card, config, position);
+  }
+
+  _closeDialog() {
+    if (this._dialogEl) this._dialogEl.remove();
+    this._dialogEl = null;
+    this._dialog = null;
+    this._dialogError = "";
+  }
+
+  async _loadElement(name) {
+    if (customElements.get(name)) return true;
+    try {
+      if (!this._cardHelpers && typeof window.loadCardHelpers === "function") {
+        this._cardHelpers = await window.loadCardHelpers();
+      }
+    } catch (_) {
+      this._cardHelpers = null;
+    }
+    const helpers = this._cardHelpers;
+    if (helpers && name === "hui-dialog-edit-card" && typeof helpers.getCardElementEditor === "function") {
+      try {
+        helpers.getCardElementEditor({ type: "entities", entities: [] });
+      } catch (_) {
+        /* ignore */
+      }
+    }
+    if (customElements.get(name)) return true;
+    const base = "/frontend_latest/";
+    const scripts = {
+      "hui-dialog-edit-card": "dialog-edit-card.js",
+      "hui-dialog-create-card": "dialog-create-card.js",
     };
-    const cancel = document.createElement("button");
-    cancel.textContent = "Annuler";
-    cancel.onclick = () => {
-      page._fallback = null;
-      this._error = "";
-      this._markDirty();
-    };
-    box.append(area, apply, cancel);
-    return box;
+    const script = scripts[name];
+    if (script) {
+      await loadScriptOnce(`${base}${script}`);
+      if (customElements.get(name)) return true;
+    }
+    return false;
   }
 
   _applyDialogConfig(page, card, config, position) {
     page.cards = page.cards || [];
-    const index = page.cards.indexOf(card);
+    const index = card ? page.cards.indexOf(card) : -1;
     const at = index === -1 ? (position === undefined ? page.cards.length : position) : index;
     if (index !== -1) page.cards.splice(index, 1);
     page.cards.splice(at, 0, this._newCard(config));
@@ -604,6 +851,22 @@ class MemoMindGlassesPanel extends HTMLElement {
       .card-head .card-type { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       .hint { color:var(--secondary-text-color,#666); font-size:.9rem; }
       .save-state { align-self:center; font-size:.85rem; color:var(--secondary-text-color,#666); }
+      .dialog-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.5); display:flex; align-items:center; justify-content:center; z-index:9999; }
+      .dialog { background:var(--card-background-color,#fff); color:var(--primary-text-color,#111); border-radius:12px; padding:16px; width:min(560px,92vw); max-height:86vh; overflow:auto; display:flex; flex-direction:column; gap:12px; }
+      .dialog-head { display:flex; justify-content:space-between; align-items:center; }
+      .dialog-head h2 { font-size:1.1rem; margin:0; }
+      .gallery { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:8px; }
+      .gallery-item { padding:12px; text-align:left; }
+      .fields { display:flex; flex-direction:column; gap:10px; }
+      .field { display:flex; flex-direction:column; gap:4px; font-size:.9rem; }
+      .dialog-actions { display:flex; gap:8px; justify-content:flex-end; }
+      .entity-picker { display:flex; flex-direction:column; gap:6px; }
+      .chips { display:flex; flex-wrap:wrap; gap:6px; }
+      .chip { background:var(--secondary-background-color,#eee); border-radius:999px; padding:4px 10px; font-size:.85rem; display:inline-flex; gap:6px; align-items:center; }
+      .chip button { border:none; background:transparent; padding:0 2px; }
+      .options { display:flex; flex-direction:column; max-height:180px; overflow-y:auto; }
+      .options .option { display:flex; flex-direction:column; text-align:left; border:none; border-radius:0; }
+      .options .option small { color:var(--secondary-text-color,#666); }
       @media (max-width:700px){ .layout{grid-template-columns:1fr;} .entity-row{grid-template-columns:auto auto 1fr auto;} .entity-info{display:none;} }
     `;
     root.append(style);
@@ -739,6 +1002,92 @@ class MemoMindGlassesPanel extends HTMLElement {
 }
 
 customElements.define("memomind-glasses-panel", MemoMindGlassesPanel);
+
+const CARD_SUGGESTIONS = [
+  {
+    type: "entities",
+    label: "Entités (liste)",
+    template: [
+      { key: "title", name: "Titre", placeholder: "Salon" },
+      { key: "entities", name: "Entités", entities: [], required: true },
+    ],
+  },
+  {
+    type: "gauge",
+    label: "Jauge",
+    template: [
+      { key: "entity", name: "Entité (sensor)", placeholder: "sensor.temperature", required: true },
+      { key: "name", name: "Nom (optionnel)", placeholder: "" },
+      { key: "unit", name: "Unité (optionnel)", placeholder: "°C" },
+    ],
+  },
+  {
+    type: "thermostat",
+    label: "Thermostat",
+    template: [
+      { key: "entity", name: "Entité climate", placeholder: "climate.salon", required: true },
+    ],
+  },
+  {
+    type: "markdown",
+    label: "Texte / Markdown",
+    template: [
+      { key: "title", name: "Titre", placeholder: "" },
+      { key: "content", name: "Contenu", text: true, required: true },
+    ],
+  },
+  {
+    type: "tile",
+    label: "Tuile (une entité)",
+    template: [
+      { key: "entity", name: "Entité", placeholder: "light.salon", required: true },
+    ],
+  },
+];
+CARD_SUGGESTIONS.push(
+  { type: "blank", label: "Autre carte (Home Assistant)", template: null },
+);
+
+function buildSuggestionConfig(state) {
+  const config = { type: state.type };
+  state.steps.forEach((step) => {
+    step.forEach((field) => {
+      if (field.key === "entities") {
+        if (Array.isArray(field.value) && field.value.length) config.entities = field.value;
+        return;
+      }
+      if (field.value === undefined || field.value === "") return;
+      config[field.key] = field.value;
+    });
+  });
+  if (config.type === "gauge" && !config.severity) {
+    if (config.unit === "%" || config.unit === "") {
+      config.min = 0;
+      config.max = 100;
+    }
+  }
+  return config;
+}
+
+function loadScriptOnce(url) {
+  if (typeof document === "undefined") return Promise.resolve(false);
+  const existing = document.querySelector(`script[data-memomind="${url}"]`);
+  if (existing) {
+    return new Promise((resolve) => {
+      existing.addEventListener("load", () => resolve(true), { once: true });
+      existing.addEventListener("error", () => resolve(false), { once: true });
+    });
+  }
+  return new Promise((resolve) => {
+    const script = document.createElement("script");
+    script.type = "module";
+    script.src = url;
+    script.dataset.memomind = url;
+    script.onload = () => resolve(true);
+    script.onerror = () => resolve(false);
+    document.head.append(script);
+  });
+}
 
 function parseCardYaml(text) {
   const lines = String(text || "")

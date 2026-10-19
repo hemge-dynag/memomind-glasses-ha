@@ -24,6 +24,8 @@ _LOGGER = logging.getLogger(__name__)
 PANEL_DIR = Path(__file__).parent / "panel"
 
 
+
+
 async def async_setup_entry(hass: HomeAssistant, entry) -> bool:
     """Register the store, the HTTP views and the sidebar panel."""
 
@@ -40,7 +42,7 @@ async def async_setup_entry(hass: HomeAssistant, entry) -> bool:
             hass,
             webcomponent_name=PANEL_COMPONENT,
             frontend_url_path=PANEL_URL,
-            module_url=f"/{DOMAIN}/panel.js",
+            module_url=f"/{DOMAIN}/panel.js?v={_frontend_version(hass)}",
             sidebar_title=PANEL_TITLE,
             sidebar_icon=PANEL_ICON,
             require_admin=False,
@@ -50,6 +52,15 @@ async def async_setup_entry(hass: HomeAssistant, entry) -> bool:
     except Exception:  # noqa: BLE001 - keep the API usable even if the panel fails
         _LOGGER.exception("MemoMind Glasses: unable to register the sidebar panel")
     return True
+
+
+def _frontend_version(hass: HomeAssistant) -> int:
+    from .const import VERSION
+
+    parts = [int(part) for part in VERSION.split(".") if part.isdigit()][:3]
+    while len(parts) < 3:
+        parts.append(0)
+    return parts[0] * 10000 + parts[1] * 100 + parts[2]
 
 
 def register_views(hass: HomeAssistant) -> None:

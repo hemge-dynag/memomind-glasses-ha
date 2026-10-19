@@ -28,16 +28,19 @@ directory and restart, then add the integration from the UI.
 1. Open **MemoMind Glasses** in the sidebar.
 2. Type a name in the field next to **+ Dashboard** and press Enter or the
    button. The dashboard is created immediately, even while it is still empty.
-3. **+ Page**, then **+ Card**. Home Assistant's own card picker opens: choose
-   any Lovelace card from the gallery (entities, gauge, thermostat, markdown,
-   picture-glance, a custom card...) and fill it in with HA's normal forms. A
-   card is what the wearer sees as one screen on the glasses.
+3. **+ Page**, then **+ Card**. A card gallery opens: entities list, gauge,
+   thermostat, markdown, tile, or *any other card* (paste its YAML, or edit it
+   later with Home Assistant's own card editor). A card is what the wearer sees
+   as one screen on the glasses.
 4. Reorder pages within a dashboard and cards within a page with the ← / →
    and ↑ / ↓ buttons. The card badge shows the glasses screen number. The order
    in the panel is exactly the order the glasses render.
 5. Changes are saved automatically; **Enregistrer** forces the save. Errors
    from Home Assistant are shown verbatim under the title instead of being
    swallowed.
+
+When Home Assistant's own card dialogs are available the panel opens them
+instead, so every card type can be configured with its native form.
 
 The exact Lovelace config of every card is stored, so the panel previews it
 with Home Assistant's own renderer and the phone receives the same config.
