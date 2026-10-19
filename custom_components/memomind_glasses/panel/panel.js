@@ -437,7 +437,9 @@ class MemoMindGlassesPanel extends HTMLElement {
           bubbles: true,
           composed: true,
           cancelable: false,
-          detail: { dialogTag, dialogParams },
+          // `memomind` marks the event as ours, so nothing else can mistake
+          // it for a dialog Home Assistant opened by itself.
+          detail: { dialogTag, dialogParams, memomind: true },
         }),
       );
       this._watchDialog();
@@ -562,8 +564,12 @@ class MemoMindGlassesPanel extends HTMLElement {
     if (this._dialogEl) this._dialogEl.remove();
     const state = this._dialog;
     if (!state) return;
+    // The first click on the overlay starts a new interaction: never let a
+    // press that began before the redraw close what was just rebuilt.
+    this._guardUntil = Date.now() + 250;
     const backdrop = document.createElement("div");
     backdrop.className = "dialog-backdrop";
+    backdrop.dataset.dialog = "card";
     const dialog = document.createElement("div");
     dialog.className = "dialog";
     dialog.setAttribute("role", "dialog");
@@ -749,9 +755,19 @@ class MemoMindGlassesPanel extends HTMLElement {
     const sheet = document.createElement("style");
     sheet.className = "memomind-dialog-style";
     sheet.textContent = DIALOG_CSS;
+    // The dialog now lives outside the panel: its class carries the bits the
+    // shadow root used to provide (see _drawDialogNow for the .embedded rule).
+    backdrop.classList.add("portaled");
     backdrop.append(sheet);
+    // Clicks inside the dialog never reach the panel or HA behind the
+    // backdrop; only a press on the backdrop itself closes it.
     backdrop.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (Date.now() < (this._guardUntil || 0)) return;
       if (event.target === backdrop) this._closeDialog();
+    });
+    ["mousedown", "mouseup", "pointerdown", "pointerup"].forEach((type) => {
+      backdrop.addEventListener(type, (event) => event.stopPropagation());
     });
     document.body.append(backdrop);
     this._dialogEl = backdrop;
@@ -760,28 +776,15 @@ class MemoMindGlassesPanel extends HTMLElement {
 
   _attachDialogWatch() {
     if (!this._stopDialogWatch) {
-      this._onHaDialog = () => {
-        if (this._dialog === null && this._dialogEl) this._closeDialog();
-      };
-      this._onCloseDialog = (event) => {
-        if (!this._dialogEl) return;
-        if (event && event.detail && event.detail.dialogTag) return;
-        if (event && event.target === this._dialogEl) return;
-        this._closeDialog();
-      };
-      // HA's dialog manager teleports its overlay to <body> with fixed
-      // positioning. Whoever replaces ours on top wins the click, so ours
-      // steps aside instead of sitting there unclickable.
+      // The only trusted takeover signal is HA actually rendering its own
+      // dialog: the MutationObserver below closes ours then. Event listeners
+      // on the page were closing the picker while the user was still using
+      // it (keyboard/IME presses do not always hit our backdrop), so nothing
+      // is wired to window/document any more.
       this._observeDialogs();
-      window.addEventListener("show-dialog", this._onHaDialog, false);
-      document.addEventListener("close-dialog", this._onCloseDialog, false);
-      document.addEventListener("mousedown", this._onCloseDialog, true);
       this._stopDialogWatch = () => {
         if (this._observer) this._observer.disconnect();
         this._observer = null;
-        window.removeEventListener("show-dialog", this._onHaDialog, false);
-        document.removeEventListener("close-dialog", this._onCloseDialog, false);
-        document.removeEventListener("mousedown", this._onCloseDialog, true);
         this._stopDialogWatch = null;
       };
     }
@@ -791,6 +794,8 @@ class MemoMindGlassesPanel extends HTMLElement {
     if (this._observer || typeof MutationObserver !== "function") return;
     this._observer = new MutationObserver((records) => {
       if (!this._dialogEl) return;
+      // HA does not always reuse its dialog element: a "close-dialog" event
+      // followed by a new one must count as a takeover too.
       const yields = (name) => {
         const tag = String(name || "").toLowerCase();
         return tag.indexOf("hui-dialog-") === 0 || tag === "dialog-general" || tag === "ha-more-info-dialog";

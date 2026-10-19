@@ -10,7 +10,7 @@ PANEL_URL = "memomind-glasses"
 PANEL_TITLE = "MemoMind Glasses"
 PANEL_ICON = "mdi:glasses"
 PANEL_COMPONENT = "memomind-glasses-panel"
-VERSION = "1.6.4"
+VERSION = "1.6.5"
 CARD_DIALOG_FALLBACK = "memomind-glasses-card-dialog"
 
 API_PREFIX = f"/api/{DOMAIN}"
