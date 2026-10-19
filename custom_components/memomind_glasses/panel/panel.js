@@ -434,6 +434,10 @@ class MemoMindGlassesPanel extends HTMLElement {
       button.className = "gallery-item";
       button.textContent = entry.label;
       button.onclick = () => {
+        if (entry.type === "blank") {
+          this._openLovelaceCardDialog(page, position);
+          return;
+        }
         state.type = entry.type;
         state.blank = !entry.template;
         state.steps = entry.template
@@ -516,17 +520,15 @@ class MemoMindGlassesPanel extends HTMLElement {
     if (!state.steps.length) {
       const actions = document.createElement("div");
       actions.className = "dialog-actions";
-      if (state.blank) {
-        const toggle = document.createElement("button");
-        toggle.textContent = "Coller un YAML";
-        toggle.onclick = () => {
-          state.steps = [[{ key: "yaml", name: "YAML de la carte", text: true, index: 0, value: "" }]];
-          state.yaml = true;
-          this._dialogError = "";
-          this._drawDialog();
-        };
-        actions.append(toggle);
-      }
+      const toggle = document.createElement("button");
+      toggle.textContent = "Coller un YAML";
+      toggle.onclick = () => {
+        state.steps = [[{ key: "yaml", name: "YAML de la carte", text: true, index: 0, value: "" }]];
+        state.yaml = true;
+        this._dialogError = "";
+        this._drawDialog();
+      };
+      actions.append(toggle);
       const cancel = document.createElement("button");
       cancel.textContent = "Fermer";
       cancel.onclick = () => this._closeDialog();
@@ -540,6 +542,23 @@ class MemoMindGlassesPanel extends HTMLElement {
     });
     document.body.append(backdrop);
     this._dialogEl = backdrop;
+  }
+
+  async _openLovelaceCardDialog(page, position) {
+    this._closeDialog();
+    const opened = await this._showLovelaceDialog(
+      page,
+      { type: "entities", entities: [] },
+      position,
+    );
+    if (!opened) {
+      this._openOwnDialog(page, position);
+      this._dialog.blank = true;
+      this._dialog.steps = [];
+      this._dialogError =
+        "Le sélecteur de cartes de Home Assistant n'est pas chargé : colle le YAML de ta carte ci-dessous.";
+      this._drawDialog();
+    }
   }
 
   _entityPicker(initial) {
