@@ -399,7 +399,8 @@ class MemoMindGlassesPanel extends HTMLElement {
   }
 
   _openOwnDialog(page, position) {
-    if (this._dialog) this._dialog.remove();
+    if (this._dialogEl) this._dialogEl.remove();
+    this._dialogEl = null;
     this._dialog = { page, position, type: "entities", steps: [], index: 0 };
     this._dialogError = "";
     this._drawDialog();
