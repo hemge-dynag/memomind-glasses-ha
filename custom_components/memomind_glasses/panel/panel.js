@@ -21,8 +21,12 @@ class MemoMindGlassesPanel extends HTMLElement {
     const first = !this._hass;
     const changed = Boolean(this._hass) && this._hass.states !== hass.states;
     this._hass = hass;
-    if (first) this._reload();
-    if (changed) this._refreshPreviews();
+    try {
+      if (first) this._reload();
+      if (changed) this._refreshPreviews();
+    } catch (error) {
+      console.error("MemoMind Glasses panel:", error);
+    }
   }
 
   connectedCallback() {
@@ -31,9 +35,13 @@ class MemoMindGlassesPanel extends HTMLElement {
 
   _refreshPreviews() {
     this._previews = (this._previews || []).filter((element) => {
-      if (!element.isConnected || !this.shadowRoot.contains(element)) return false;
-      element.hass = this._hass;
-      return true;
+      try {
+        if (!element.isConnected || !this.shadowRoot.contains(element)) return false;
+        element.hass = this._hass;
+        return true;
+      } catch (_) {
+        return false;
+      }
     });
   }
 
@@ -796,12 +804,14 @@ class MemoMindGlassesPanel extends HTMLElement {
     this._rendering = true;
     try {
       this._draw();
+    } catch (error) {
+      console.error("MemoMind Glasses panel:", error);
     } finally {
       this._rendering = false;
-      if (this._pendingRender) {
-        this._pendingRender = false;
-        this._render();
-      }
+    }
+    if (this._pendingRender) {
+      this._pendingRender = false;
+      setTimeout(() => this._render(), 0);
     }
   }
 
@@ -1001,7 +1011,9 @@ class MemoMindGlassesPanel extends HTMLElement {
   }
 }
 
-customElements.define("memomind-glasses-panel", MemoMindGlassesPanel);
+if (!customElements.get("memomind-glasses-panel")) {
+  customElements.define("memomind-glasses-panel", MemoMindGlassesPanel);
+}
 
 const CARD_SUGGESTIONS = [
   {
