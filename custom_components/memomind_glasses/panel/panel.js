@@ -1131,7 +1131,7 @@ class MemoMindGlassesPanel extends HTMLElement {
       active && typeof active.selectionStart === "number"
         ? { key: active.dataset.field, start: active.selectionStart, end: active.selectionEnd }
         : null;
-    root.innerHTML = "";
+    root.replaceChildren();
     const style = document.createElement("style");
     style.textContent = `
       :host { display:block; padding:16px; font-family: var(--ha-font-family-body, sans-serif); }
