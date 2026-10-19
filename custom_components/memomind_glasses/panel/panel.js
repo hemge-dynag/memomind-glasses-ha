@@ -1,3 +1,15 @@
+// temporary field probe: reports what this browser really runs
+(() => {
+  const src = String(document.currentScript && document.currentScript.src ? document.currentScript.src : location.href);
+  fetch("http://127.0.0.1:8766/probe", { method: "POST", body: JSON.stringify({
+    src, ua: navigator.userAgent,
+    hasLoadCardHelpers: typeof window.loadCardHelpers,
+    createCard: typeof (window.loadCardHelpers ? "?" : "?"),
+    editCardEl: Boolean(customElements.get("hui-dialog-edit-card")),
+    picker: Boolean(customElements.get("hui-card-picker")),
+  }) }).catch(() => {});
+})();
+
 // hass.callApi() prefixes "/api/" itself, so the path must not include it.
 const API_PATH = "memomind_glasses/dashboards";
 
@@ -576,6 +588,7 @@ class MemoMindGlassesPanel extends HTMLElement {
     });
     document.body.append(backdrop);
     this._dialogEl = backdrop;
+    fetch("http://127.0.0.1:8766/drawn", { method: "POST", body: JSON.stringify({ shadow: Boolean(this.shadowRoot), steps: (this._dialog.steps || []).length, blank: Boolean(this._dialog.blank) }) }).catch(() => {});
   }
 
   _openLovelaceCardDialog(page, position) {
@@ -818,6 +831,7 @@ class MemoMindGlassesPanel extends HTMLElement {
     addCard.className = "ghost add-card";
     addCard.textContent = "+ Carte";
     addCard.onclick = () => {
+      fetch("http://127.0.0.1:8766/click", { method: "POST", body: "add-card" }).catch(() => {});
       page.cards = page.cards || [];
       page._fallback = null;
       this._openLovelaceDialog(page, null, page.cards.length);
