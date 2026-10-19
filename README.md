@@ -44,8 +44,10 @@ dialog through a `show-dialog` event, so you get the familiar **Par entité /
 Par carte** picker and every card type can be configured with its native form.
 The panel's gallery opens at the same moment and closes by itself the instant
 Home Assistant's dialog appears (or after 2.5 s if it never does), so a click is
-never silent. Both overlays are portalled to the page body and centred, so the
-sidebar/toolbar can no longer cover the buttons.
+never silent. The overlay is portalled to the page body with its own `<style>`
+(no page-wide stylesheet is touched) and centred, so the sidebar/toolbar can no
+longer cover the buttons. If the panel ever fails to render, it shows the error
+instead of leaving a blank page.
 
 The exact Lovelace config of every card is stored, so the panel previews it
 with Home Assistant's own renderer and the phone receives the same config.

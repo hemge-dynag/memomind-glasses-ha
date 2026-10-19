@@ -21,15 +21,6 @@ const DIALOG_CSS = `
   .hint { color:var(--secondary-text-color,#666); font-size:.9rem; margin:0; }
   .dialog .error { color:var(--error-color,#c62828); font-size:.9rem; margin:0; }
 `;
-const DIALOG_SHEET = (() => {
-  try {
-    const sheet = new CSSStyleSheet();
-    sheet.replaceSync(DIALOG_CSS);
-    return sheet;
-  } catch (_) {
-    return null;
-  }
-})();
 
 const PANEL_TAG = "memomind-glasses-panel";
 
@@ -751,13 +742,14 @@ class MemoMindGlassesPanel extends HTMLElement {
 
   _mountDialog(backdrop) {
     if (!backdrop) return;
-    // Portal the dialog to <body>: inside the shadow root it inherited the
-    // panel's scrolling box and ended up clipped under HA's toolbar. Its
-    // geometry comes from the stylesheet, injected next to the portal; inline
-    // styles never applied and used to glue the box to the top-left corner.
-    if (typeof document.adoptedStyleSheets !== "undefined") {
-      document.adoptedStyleSheets = [...document.adoptedStyleSheets, DIALOG_SHEET];
-    }
+    // Portal the dialog to <body> with its own <style>: inside the shadow
+    // root it inherited the panel's scrolling box and ended up under HA's
+    // toolbar, but a page-global adopted stylesheet is worse — it restyles
+    // the whole app.
+    const sheet = document.createElement("style");
+    sheet.className = "memomind-dialog-style";
+    sheet.textContent = DIALOG_CSS;
+    backdrop.append(sheet);
     backdrop.addEventListener("click", (event) => {
       if (event.target === backdrop) this._closeDialog();
     });
@@ -1075,14 +1067,39 @@ class MemoMindGlassesPanel extends HTMLElement {
     this._rendering = true;
     try {
       this._draw();
+      this._renderedOnce = true;
     } catch (error) {
       console.error("MemoMind Glasses panel:", error);
+      // An empty shadow root on a dark theme reads as a black page. Say what
+      // happened instead of leaving the user with nothing.
+      this._showCrash(error);
     } finally {
       this._rendering = false;
     }
     if (this._pendingRender) {
       this._pendingRender = false;
       setTimeout(() => this._render(), 0);
+    }
+  }
+
+  _showCrash(error) {
+    const root = this.shadowRoot;
+    if (!root) return;
+    try {
+      root.innerHTML = "";
+      const box = document.createElement("div");
+      box.style.padding = "16px";
+      box.style.color = "var(--primary-text-color,#111)";
+      const title = document.createElement("h2");
+      title.textContent = "MemoMind Glasses n'a pas pu s'afficher";
+      const detail = document.createElement("p");
+      detail.textContent = error && error.message ? error.message : String(error);
+      const hint = document.createElement("p");
+      hint.textContent = "Recharge la page (Ctrl+Maj+R). Si ça persiste, dis-le à Memo.";
+      box.append(title, detail, hint);
+      root.append(box);
+    } catch (_) {
+      /* nothing else we can do */
     }
   }
 
