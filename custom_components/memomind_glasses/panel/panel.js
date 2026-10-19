@@ -342,17 +342,104 @@ class MemoMindGlassesPanel extends HTMLElement {
   _editCard(card, index) {
     const { page, index: position } = this._pageOf(card);
     if (!page) return;
-    this._openLovelaceDialog(
-      page,
-      card,
-      position === -1 ? (index === undefined ? page.cards.length : index) : position,
-    );
+    const at = position === -1 ? (index === undefined ? page.cards.length : index) : position;
+    const existing = this._cardConfig(card);
+    this._openLovelaceDialog(page, existing && existing.type ? existing : null, at);
   }
 
-  _openLovelaceDialog(page, config, position) {
-    const existing =
-      config && config.config && config.config.type ? config.config : null;
+  // Home Assistant's own card dialog, the one a dashboard uses. We open our
+  // picker right away underneath it so the click is never silent, and we drop
+  // ours as soon as HA raises its <dialog> above the panel.
+  _openLovelaceDialog(page, existing, position) {
     this._openOwnDialog(page, position, existing);
+    const token = this._dialog;
+    const at = position === undefined ? page.cards.length : position;
+    if (existing) {
+      this._fireDialog("hui-dialog-edit-card", {
+        lovelaceConfig: this._virtualLovelace(page),
+        saveCardConfig: (config) => {
+          if (!config || !config.type) return;
+          if (this._dialog === token) this._closeDialog();
+          if (_containsPage(this._draft, page)) this._applyDialogConfig(page, null, config, at);
+        },
+        cardConfig: JSON.parse(JSON.stringify(existing)),
+        isNew: false,
+      });
+    } else {
+      this._fireDialog("hui-dialog-create-card", {
+        lovelaceConfig: this._virtualLovelace(page),
+        saveConfig: (config) => {
+          const cards =
+            (config && config.views && config.views[0] && config.views[0].cards) ||
+            page.cards ||
+            [];
+          const card = cards[at] || cards[cards.length - 1];
+          if (!card || !card.type) return;
+          if (this._dialog === token) this._closeDialog();
+          if (_containsPage(this._draft, page)) this._applyDialogConfig(page, null, card, at);
+        },
+        path: [0, "cards", at],
+      });
+    }
+  }
+
+  _virtualLovelace(page) {
+    return {
+      config: {
+        views: [
+          {
+            title: page.title || "",
+            path: "memo",
+            cards: (page.cards || []).map((card) => this._cardConfig(card)),
+          },
+        ],
+      },
+      editMode: true,
+    };
+  }
+
+  // HA's dialog manager listens for this event on <home-assistant>, composed,
+  // and imports the chunk itself. Firing it is the only way in from a panel.
+  _fireDialog(dialogTag, dialogParams) {
+    try {
+      // Walk up through light DOM, shadow roots and the panel container until
+      // we reach HA's <home-assistant>, which owns the dialog manager.
+      let node = this;
+      for (let depth = 0; node && depth < 32; depth += 1) {
+        if (node.tagName === "HOME-ASSISTANT") break;
+        node = node.parentNode || node.parentElement || node.host || null;
+      }
+      if (!node || node.tagName !== "HOME-ASSISTANT") return;
+      node.dispatchEvent(
+        new CustomEvent("show-dialog", {
+          bubbles: true,
+          composed: true,
+          cancelable: false,
+          detail: { dialogTag, dialogParams },
+        }),
+      );
+      this._watchDialog();
+    } catch (error) {
+      console.warn("MemoMind Glasses: native dialog unavailable", error);
+    }
+  }
+
+  _watchDialog() {
+    if (this._dialogWatch) clearInterval(this._dialogWatch);
+    const started = Date.now();
+    this._dialogWatch = setInterval(() => {
+      const open = document.querySelector("hui-dialog-create-card, hui-dialog-edit-card");
+      if (open) {
+        clearInterval(this._dialogWatch);
+        this._dialogWatch = null;
+        this._closeDialog();
+        return;
+      }
+      if (Date.now() - started > 2500) {
+        clearInterval(this._dialogWatch);
+        this._dialogWatch = null;
+      }
+    }, 200);
   }
 
 
@@ -777,37 +864,6 @@ class MemoMindGlassesPanel extends HTMLElement {
     this._dialogEl = null;
     this._dialog = null;
     this._dialogError = "";
-  }
-
-  async _loadElement(name) {
-    if (customElements.get(name)) return true;
-    try {
-      if (!this._cardHelpers && typeof window.loadCardHelpers === "function") {
-        this._cardHelpers = await window.loadCardHelpers();
-      }
-    } catch (_) {
-      this._cardHelpers = null;
-    }
-    const helpers = this._cardHelpers;
-    if (helpers && name === "hui-dialog-edit-card" && typeof helpers.getCardElementEditor === "function") {
-      try {
-        helpers.getCardElementEditor({ type: "entities", entities: [] });
-      } catch (_) {
-        /* ignore */
-      }
-    }
-    if (customElements.get(name)) return true;
-    const base = "/frontend_latest/";
-    const scripts = {
-      "hui-dialog-edit-card": "dialog-edit-card.js",
-      "hui-dialog-create-card": "dialog-create-card.js",
-    };
-    const script = scripts[name];
-    if (script) {
-      await loadScriptOnce(`${base}${script}`);
-      if (customElements.get(name)) return true;
-    }
-    return false;
   }
 
   _applyDialogConfig(page, card, config, position) {

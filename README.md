@@ -39,8 +39,12 @@ directory and restart, then add the integration from the UI.
    from Home Assistant are shown verbatim under the title instead of being
    swallowed.
 
-When Home Assistant's own card dialogs are available the panel opens them
-instead, so every card type can be configured with its native form.
+Press **+ Carte** or **Modifier** and the panel raises Home Assistant's own card
+dialog through a `show-dialog` event, so you get the familiar **Par entité /
+Par carte** picker and every card type can be configured with its native form.
+Until that dialog slides in (about a second), the panel's own gallery stays
+open underneath; it disappears as soon as HA's dialog opens, and remains there
+as a fallback if your Home Assistant version does not load it.
 
 The exact Lovelace config of every card is stored, so the panel previews it
 with Home Assistant's own renderer and the phone receives the same config.
