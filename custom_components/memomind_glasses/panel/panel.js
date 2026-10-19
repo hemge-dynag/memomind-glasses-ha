@@ -9,6 +9,8 @@ class MemoMindGlassesPanel extends HTMLElement {
     this._draft = null;
     this._busy = false;
     this._error = "";
+    this._newName = "";
+    this._entityInput = {};
     this.attachShadow({ mode: "open" });
   }
 
@@ -22,15 +24,39 @@ class MemoMindGlassesPanel extends HTMLElement {
     this._render();
   }
 
+  _describe(error) {
+    if (!error) return "Erreur inconnue";
+    if (typeof error === "string") return error;
+    if (error.body && typeof error.body === "object") {
+      const body = error.body;
+      if (body.message) return String(body.message);
+      if (body.error) return String(body.error);
+      try {
+        return JSON.stringify(body);
+      } catch (_) {
+        return "Erreur serveur";
+      }
+    }
+    if (error.message) return String(error.message);
+    if (error.body) return String(error.body);
+    try {
+      return JSON.stringify(error);
+    } catch (_) {
+      return "Erreur inconnue";
+    }
+  }
+
   async _call(method, path = "", body = undefined) {
     this._busy = true;
     this._error = "";
     this._render();
     try {
+      if (!this._hass) throw new Error("Home Assistant non connecté");
       const result = await this._hass.callApi(method, path + API, body);
-      return result;
+      return result === undefined ? {} : result;
     } catch (error) {
-      this._error = String(error && error.message ? error.message : error);
+      const status = error && error.status ? ` (${error.status})` : "";
+      this._error = this._describe(error) + status;
       return null;
     } finally {
       this._busy = false;
@@ -57,18 +83,33 @@ class MemoMindGlassesPanel extends HTMLElement {
   }
 
   async _create() {
-    const name = window.prompt("Nom du dashboard pour les lunettes", "Lunettes");
-    if (!name) return;
+    const name = (this._newName || "").trim() || "Lunettes";
     const result = await this._call("POST", "", { action: "create", name });
     if (!result) return;
+    this._newName = "";
+    this._selected = Number(result.id);
+    this._draft = JSON.parse(
+      JSON.stringify(result.source || result.dashboard || { name, pages: [] }),
+    );
     await this._reload();
-    if (this._dashboards.length) await this._open(this._dashboards.length - 1);
   }
 
   async _remove(index) {
-    if (!window.confirm("Supprimer ce dashboard ?")) return;
+    const dashboard = this._dashboards[index];
+    const label = dashboard ? dashboard.name : "";
+    if (!this._confirmDelete) {
+      this._confirmDelete = index;
+      this._render();
+      return;
+    }
+    if (this._confirmDelete !== index) {
+      this._confirmDelete = index;
+      this._render();
+      return;
+    }
+    this._confirmDelete = null;
     const result = await this._call("DELETE", `/${index}`);
-    if (result === null && this._error) return;
+    if (result === null) return;
     this._selected = null;
     this._draft = null;
     await this._reload();
@@ -78,7 +119,10 @@ class MemoMindGlassesPanel extends HTMLElement {
     if (this._selected === null || !this._draft) return;
     const result = await this._call("PUT", `/${this._selected}`, this._draft);
     if (!result) return;
-    this._draft = JSON.parse(JSON.stringify(result.dashboard));
+    this._draft = JSON.parse(
+      JSON.stringify(result.dashboard || result.source || this._draft),
+    );
+    this._saved = true;
     await this._reload();
   }
 
@@ -153,14 +197,28 @@ class MemoMindGlassesPanel extends HTMLElement {
   }
 
   _addEntity(path) {
-    const raw = window.prompt("Entité (ex: light.salon)", "light.");
-    if (!raw) return;
+    const key = path.join("/");
+    const raw = this._entityInput[key] || "";
     const entity = raw.trim();
-    if (!entity.includes(".")) return;
+    if (!entity.includes(".")) {
+      this._error = "Entité invalide : utilise la forme domaine.objet (ex: light.salon)";
+      this._render();
+      return;
+    }
     const list = this._listAt(path);
     if (!list) return;
+    if (list.some((row) => row.entity === entity)) {
+      this._error = `${entity} est déjà dans cette carte`;
+      this._render();
+      return;
+    }
     list.push({ entity });
+    this._entityInput[key] = "";
     this._markDirty();
+  }
+
+  _entitiesFor(card) {
+    return (card.entities || []).map((entity) => entity.entity);
   }
 
   _pageNode(page, pageIndex) {
@@ -205,6 +263,37 @@ class MemoMindGlassesPanel extends HTMLElement {
       add.onclick = () => this._addEntity([pageIndex, "cards", cardIndex]);
       cardHead.append(cardTitle, add);
       cardBox.append(cardHead);
+
+      const key = [pageIndex, "cards", cardIndex].join("/");
+      const picker = document.createElement("div");
+      picker.className = "picker";
+      const input = document.createElement("input");
+      input.placeholder = "light.salon — ou tape pour chercher";
+      input.value = this._entityInput[key] || "";
+      input.setAttribute("list", `entities-${key.replace(/\//g, "-")}`);
+      input.oninput = () => {
+        this._entityInput[key] = input.value;
+      };
+      input.onkeydown = (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          this._addEntity([pageIndex, "cards", cardIndex]);
+        }
+      };
+      const datalist = document.createElement("datalist");
+      datalist.id = `entities-${key.replace(/\//g, "-")}`;
+      const ids = Object.keys(this._hass ? this._hass.states || {} : {});
+      ids.sort();
+      ids.slice(0, 400).forEach((id) => {
+        const option = document.createElement("option");
+        option.value = id;
+        datalist.append(option);
+      });
+      const addInline = document.createElement("button");
+      addInline.textContent = "Ajouter";
+      addInline.onclick = () => this._addEntity([pageIndex, "cards", cardIndex]);
+      picker.append(input, datalist, addInline);
+      cardBox.append(picker);
 
       (card.entities || []).forEach((entity, entityIndex) => {
         cardBox.append(
@@ -265,7 +354,10 @@ class MemoMindGlassesPanel extends HTMLElement {
       .card-head input { flex:1; }
       .entity-row { display:grid; grid-template-columns:auto auto minmax(120px,1fr) minmax(80px,1fr) minmax(100px,1fr) auto; gap:6px; align-items:center; padding:4px 0; }
       .entity-info { color:var(--secondary-text-color,#666); font-size:.9rem; }
-      .error { color:var(--error-color,#c62828); margin-bottom:12px; }
+      .error { color:var(--error-color,#c62828); margin-bottom:12px; white-space:pre-wrap; }
+      button.danger { background:var(--error-color,#c62828); color:#fff; border-color:transparent; }
+      .picker { display:flex; gap:6px; margin:6px 0 10px; }
+      .picker input { flex:1; }
       .hint { color:var(--secondary-text-color,#666); font-size:.9rem; }
       @media (max-width:700px){ .layout{grid-template-columns:1fr;} .entity-row{grid-template-columns:auto auto 1fr auto;} .entity-info{display:none;} }
     `;
@@ -284,14 +376,27 @@ class MemoMindGlassesPanel extends HTMLElement {
 
     const bar = document.createElement("div");
     bar.className = "bar";
+    const newName = document.createElement("input");
+    newName.placeholder = "Nom du nouveau dashboard";
+    newName.value = this._newName || "";
+    newName.oninput = () => {
+      this._newName = newName.value;
+    };
+    newName.onkeydown = (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        this._create();
+      }
+    };
     const create = document.createElement("button");
     create.className = "primary";
     create.textContent = "+ Dashboard";
+    create.disabled = this._busy;
     create.onclick = () => this._create();
     const reload = document.createElement("button");
     reload.textContent = "Recharger";
     reload.onclick = () => this._reload();
-    bar.append(create, reload);
+    bar.append(newName, create, reload);
     if (this._draft) {
       const save = document.createElement("button");
       save.className = "primary";
@@ -309,7 +414,7 @@ class MemoMindGlassesPanel extends HTMLElement {
     list.className = "list";
     this._dashboards.forEach((dashboard, index) => {
       const button = document.createElement("button");
-      button.textContent = `${dashboard.name} (${dashboard.page_count})`;
+      button.textContent = `${dashboard.name} · ${dashboard.page_count} écran(s)`;
       button.className = index === this._selected ? "active" : "";
       button.onclick = () => this._open(index);
       list.append(button);
@@ -333,7 +438,9 @@ class MemoMindGlassesPanel extends HTMLElement {
         this._draft.name = name.value;
       };
       const remove = document.createElement("button");
-      remove.textContent = "Supprimer";
+      const armed = this._confirmDelete === this._selected;
+      remove.textContent = armed ? "Confirmer la suppression" : "Supprimer";
+      if (armed) remove.className = "danger";
       remove.onclick = () => this._remove(this._selected);
       head.append(name, remove);
       detail.append(head);

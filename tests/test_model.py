@@ -146,3 +146,21 @@ def test_json_round_trip_is_stable():
         }
     )
     assert model.clean_dashboard(json.loads(json.dumps(dashboard))) == dashboard
+
+
+def test_empty_dashboard_survives_round_trip():
+    created = model.clean_dashboard({"name": "Lunettes", "pages": []}, allow_empty=True)
+    assert created == {"name": "Lunettes", "pages": []}
+    assert model.clean_dashboard({"name": "x", "pages": []}) is None
+    assert model.clean_dashboards([created]) == [created]
+    assert model.wire_pages(created) == []
+    assert model.dashboard_summary(0, created)["page_count"] == 0
+
+
+def test_invalid_card_type_is_reported():
+    try:
+        model.clean_page({"cards": [{"type": "weather", "entities": ["sensor.x"]}]})
+    except model.ModelError as error:
+        assert "weather" in str(error)
+    else:
+        raise AssertionError("expected ModelError")

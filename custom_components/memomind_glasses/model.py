@@ -97,8 +97,14 @@ def clean_page(value: Any) -> dict[str, Any] | None:
     return {"title": _text(value.get("title"), MAX_TITLE), "cards": cards}
 
 
-def clean_dashboard(value: Any) -> dict[str, Any] | None:
-    """Normalises one dashboard. Accepts pages or a legacy ``cards`` list."""
+def clean_dashboard(
+    value: Any, allow_empty: bool = False
+) -> dict[str, Any] | None:
+    """Normalises one dashboard. Accepts pages or a legacy ``cards`` list.
+
+    ``allow_empty`` keeps a freshly created dashboard (no page yet) instead of
+    dropping it, which would make it vanish from the list as soon as it is saved.
+    """
 
     if not isinstance(value, dict):
         return None
@@ -111,7 +117,7 @@ def clean_dashboard(value: Any) -> dict[str, Any] | None:
         if page is not None:
             pages.append(page)
     pages = pages[:MAX_PAGES]
-    if not pages:
+    if not pages and not allow_empty:
         return None
     name = _text(value.get("name"), 40) or "Dashboard"
     return {"name": name, "pages": pages}
@@ -122,7 +128,7 @@ def clean_dashboards(values: Any) -> list[dict[str, Any]]:
 
     out = []
     for raw in values or []:
-        dashboard = clean_dashboard(raw)
+        dashboard = clean_dashboard(raw, allow_empty=True)
         if dashboard is not None:
             out.append(dashboard)
     return out[:MAX_DASHBOARDS]

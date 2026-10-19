@@ -8,6 +8,7 @@ them without any extra credential.
 from __future__ import annotations
 
 import json
+import logging
 
 from aiohttp import web
 
@@ -23,9 +24,20 @@ from .model import (
 )
 from .store import DashboardStore
 
+_LOGGER = logging.getLogger(__name__)
+
 
 def _store(hass: HomeAssistant) -> DashboardStore:
     return hass.data[DOMAIN]["store"]
+
+
+def _ensure_store(hass: HomeAssistant) -> DashboardStore | None:
+    """Returns the store, or None when the config entry is not loaded yet."""
+
+    domain_data = hass.data.get(DOMAIN)
+    if not isinstance(domain_data, dict) or "store" not in domain_data:
+        return None
+    return domain_data["store"]
 
 
 class DashboardsView(HomeAssistantView):
@@ -37,19 +49,24 @@ class DashboardsView(HomeAssistantView):
 
     async def get(self, request: web.Request) -> web.Response:
         hass: HomeAssistant = request.app["hass"]
-        store = _store(hass)
-        return self.json(
-            {
-                "dashboards": [
-                    dashboard_summary(index, dashboard)
-                    for index, dashboard in enumerate(store.dashboards)
-                ]
-            }
-        )
+        store = _ensure_store(hass)
+        if store is None:
+            return self.json({"dashboards": []})
+        try:
+            dashboards = [
+                dashboard_summary(index, dashboard)
+                for index, dashboard in enumerate(store.dashboards)
+            ]
+        except Exception:  # noqa: BLE001 - never break the panel on cached data
+            _LOGGER.exception("MemoMind Glasses: invalid stored dashboard list")
+            dashboards = []
+        return self.json({"dashboards": dashboards})
 
     async def post(self, request: web.Request) -> web.Response:
         hass: HomeAssistant = request.app["hass"]
-        store = _store(hass)
+        store = _ensure_store(hass)
+        if store is None:
+            return self.json_message("intégration non chargée", 503)
         try:
             body = await request.json()
         except ValueError:
@@ -62,7 +79,14 @@ class DashboardsView(HomeAssistantView):
                 name = str(body.get("name") or "Nouveau dashboard")[:40]
                 dashboard = store.add(name)
                 await store.async_save()
-                return self.json({"dashboard": dashboard})
+                return self.json(
+                    {
+                        "id": str(len(store.dashboards) - 1),
+                        "name": dashboard.get("name", "Dashboard"),
+                        "pages": [],
+                        "source": dashboard,
+                    }
+                )
             if action == "reorder":
                 order = [int(x) for x in body.get("order") or []]
                 if not store.reorder(order):
@@ -87,7 +111,10 @@ class DashboardView(HomeAssistantView):
             position = int(index)
         except ValueError:
             return self.json_message("index invalide", 400)
-        dashboard = _store(hass).get(position)
+        store = _ensure_store(hass)
+        if store is None:
+            return self.json_message("intégration non chargée", 503)
+        dashboard = store.get(position)
         if dashboard is None:
             return self.json_message("dashboard inconnu", 404)
         return self.json(
@@ -106,11 +133,13 @@ class DashboardView(HomeAssistantView):
             body = await request.json()
         except ValueError:
             return self.json_message("requête invalide", 400)
-        store = _store(hass)
+        store = _ensure_store(hass)
+        if store is None:
+            return self.json_message("intégration non chargée", 503)
         if store.get(position) is None:
             return self.json_message("dashboard inconnu", 404)
         try:
-            dashboard = clean_dashboard(body)
+            dashboard = clean_dashboard(body, allow_empty=True)
         except ModelError as error:
             return self.json_message(str(error), 400)
         if dashboard is None:
@@ -125,7 +154,9 @@ class DashboardView(HomeAssistantView):
             position = int(index)
         except ValueError:
             return self.json_message("index invalide", 400)
-        store = _store(hass)
+        store = _ensure_store(hass)
+        if store is None:
+            return self.json_message("intégration non chargée", 503)
         if not store.remove(position):
             return self.json_message("dashboard inconnu", 404)
         await store.async_save()
@@ -141,8 +172,10 @@ class DashboardsExportView(HomeAssistantView):
 
     async def get(self, request: web.Request) -> web.Response:
         hass: HomeAssistant = request.app["hass"]
-        store = _store(hass)
+        store = _ensure_store(hass)
         payload = []
+        if store is None:
+            return web.json_response(payload)
         for index, dashboard in enumerate(store.dashboards):
             payload.append(
                 {

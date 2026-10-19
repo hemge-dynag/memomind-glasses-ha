@@ -26,13 +26,16 @@ directory and restart, then add the integration from the UI.
 ## Build a dashboard
 
 1. Open **MemoMind Glasses** in the sidebar.
-2. **+ Dashboard**, give it a name (for example "Maison").
-3. **+ Page**, then **+ Card**, then **+ Entity**. A card is what the wearer
+2. Type a name in the field next to **+ Dashboard** and press Enter or the
+   button. The dashboard is created immediately, even while it is still empty.
+3. **+ Page**, then **+ Card**, then type an entity id in the picker (or pick
+   one from the suggestions) and press **Ajouter**. A card is what the wearer
    sees as one screen on the glasses.
 4. Reorder pages within a dashboard, cards within a page and entities within a
    card with the ↑ / ↓ buttons. The order in the panel is exactly the order the
    glasses render.
-5. **Enregistrer**.
+5. **Enregistrer**. Errors from Home Assistant are shown verbatim under the
+   title instead of being swallowed.
 
 Entity rows show the entity name and value; pressing the glasses button runs
 the entity's natural action (toggle a light or switch, turn on a scene or
