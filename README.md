@@ -42,9 +42,10 @@ directory and restart, then add the integration from the UI.
 Press **+ Carte** or **Modifier** and the panel raises Home Assistant's own card
 dialog through a `show-dialog` event, so you get the familiar **Par entité /
 Par carte** picker and every card type can be configured with its native form.
-Until that dialog slides in (about a second), the panel's own gallery stays
-open underneath; it disappears as soon as HA's dialog opens, and remains there
-as a fallback if your Home Assistant version does not load it.
+The panel's gallery opens at the same moment and closes by itself the instant
+Home Assistant's dialog appears (or after 2.5 s if it never does), so a click is
+never silent. Both overlays are portalled to the page body and centred, so the
+sidebar/toolbar can no longer cover the buttons.
 
 The exact Lovelace config of every card is stored, so the panel previews it
 with Home Assistant's own renderer and the phone receives the same config.

@@ -1,5 +1,36 @@
 // hass.callApi() prefixes "/api/" itself, so the path must not include it.
 const API_PATH = "memomind_glasses/dashboards";
+// Dialog geometry lives outside the shadow root, in the page itself: the
+// overlay is portaled to <body> so Home Assistant's toolbar can never cover
+// its buttons.
+const DIALOG_CSS = `
+  .dialog-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; padding:16px; box-sizing:border-box; z-index:1000; font-family:var(--ha-font-family-body,sans-serif); }
+  .dialog { background:var(--card-background-color,#fff); color:var(--primary-text-color,#111); border-radius:14px; padding:18px 20px; width:min(560px,100%); max-height:calc(100vh - 32px); box-sizing:border-box; overflow:auto; display:flex; flex-direction:column; gap:14px; box-shadow:0 12px 48px rgba(0,0,0,.45); }
+  .dialog button { font:inherit; padding:8px 14px; border-radius:8px; border:1px solid var(--divider-color,#ccc); background:var(--card-background-color,#fff); color:inherit; cursor:pointer; }
+  .dialog button.primary { background:var(--primary-color,#03a9f4); color:var(--text-primary-color,#fff); border-color:transparent; }
+  .dialog-head { display:flex; justify-content:space-between; align-items:center; gap:12px; position:sticky; top:-18px; background:var(--card-background-color,#fff); padding:6px 0; z-index:2; }
+  .dialog-head h2 { font-size:1.1rem; margin:0; }
+  .dialog-head button { padding:2px 10px; font-size:1.1rem; line-height:1.4; }
+  .gallery { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:8px; }
+  .gallery-item { padding:12px; text-align:left; border:1px solid var(--divider-color,#ccc); border-radius:8px; background:var(--secondary-background-color,#f3f3f3); }
+  .fields { display:flex; flex-direction:column; gap:10px; }
+  .field { display:flex; flex-direction:column; gap:4px; font-size:.9rem; }
+  .field textarea { min-height:90px; }
+  .dialog-actions { display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap; }
+  .yaml-input { width:100%; font-family:monospace; font-size:.85rem; padding:8px; border-radius:6px; border:1px solid var(--divider-color,#ccc); background:transparent; color:inherit; }
+  .hint { color:var(--secondary-text-color,#666); font-size:.9rem; margin:0; }
+  .dialog .error { color:var(--error-color,#c62828); font-size:.9rem; margin:0; }
+`;
+const DIALOG_SHEET = (() => {
+  try {
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(DIALOG_CSS);
+    return sheet;
+  } catch (_) {
+    return null;
+  }
+})();
+
 const PANEL_TAG = "memomind-glasses-panel";
 
 class MemoMindGlassesPanel extends HTMLElement {
@@ -288,7 +319,7 @@ class MemoMindGlassesPanel extends HTMLElement {
     const edit = document.createElement("button");
     edit.textContent = "Modifier";
     edit.title = "Modifier la carte";
-    edit.onclick = () => this._editCard(card);
+    edit.onclick = () => this._editCard(this._draft.pages[pageIndex].cards[cardIndex], cardIndex);
     const remove = document.createElement("button");
     remove.textContent = "✕";
     remove.title = "Retirer la carte";
@@ -419,8 +450,10 @@ class MemoMindGlassesPanel extends HTMLElement {
         }),
       );
       this._watchDialog();
+      return true;
     } catch (error) {
       console.warn("MemoMind Glasses: native dialog unavailable", error);
+      return false;
     }
   }
 
@@ -428,7 +461,13 @@ class MemoMindGlassesPanel extends HTMLElement {
     if (this._dialogWatch) clearInterval(this._dialogWatch);
     const started = Date.now();
     this._dialogWatch = setInterval(() => {
-      const open = document.querySelector("hui-dialog-create-card, hui-dialog-edit-card");
+      // Custom element tags are lowercase in HTML; match with a selector for
+      // the three ways HA names its card dialogs.
+      const open =
+        document.querySelector("hui-dialog-create-card, hui-dialog-edit-card") ||
+        Array.from(document.body.children || []).find((node) =>
+          /^(hui-dialog-|dialog-general$)/.test(String(node.localName || node.tagName || "").toLowerCase()),
+        );
       if (open) {
         clearInterval(this._dialogWatch);
         this._dialogWatch = null;
@@ -446,6 +485,11 @@ class MemoMindGlassesPanel extends HTMLElement {
   _openOwnDialog(page, position, config) {
     if (this._dialogEl) this._dialogEl.remove();
     this._dialogEl = null;
+    // One dialog at a time; a second click must not stack a second overlay.
+    if (this._dialogWatch) {
+      clearInterval(this._dialogWatch);
+      this._dialogWatch = null;
+    }
     this._dialog = { page, position, type: "entities", steps: [], index: 0 };
     this._dialogError = "";
     this._drawDialog();
@@ -706,11 +750,70 @@ class MemoMindGlassesPanel extends HTMLElement {
   }
 
   _mountDialog(backdrop) {
+    if (!backdrop) return;
+    // Portal the dialog to <body>: inside the shadow root it inherited the
+    // panel's scrolling box and ended up clipped under HA's toolbar. Its
+    // geometry comes from the stylesheet, injected next to the portal; inline
+    // styles never applied and used to glue the box to the top-left corner.
+    if (typeof document.adoptedStyleSheets !== "undefined") {
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, DIALOG_SHEET];
+    }
     backdrop.addEventListener("click", (event) => {
       if (event.target === backdrop) this._closeDialog();
     });
     document.body.append(backdrop);
     this._dialogEl = backdrop;
+    this._attachDialogWatch();
+  }
+
+  _attachDialogWatch() {
+    if (!this._stopDialogWatch) {
+      this._onHaDialog = () => {
+        if (this._dialog === null && this._dialogEl) this._closeDialog();
+      };
+      this._onCloseDialog = (event) => {
+        if (!this._dialogEl) return;
+        if (event && event.detail && event.detail.dialogTag) return;
+        if (event && event.target === this._dialogEl) return;
+        this._closeDialog();
+      };
+      // HA's dialog manager teleports its overlay to <body> with fixed
+      // positioning. Whoever replaces ours on top wins the click, so ours
+      // steps aside instead of sitting there unclickable.
+      this._observeDialogs();
+      window.addEventListener("show-dialog", this._onHaDialog, false);
+      document.addEventListener("close-dialog", this._onCloseDialog, false);
+      document.addEventListener("mousedown", this._onCloseDialog, true);
+      this._stopDialogWatch = () => {
+        if (this._observer) this._observer.disconnect();
+        this._observer = null;
+        window.removeEventListener("show-dialog", this._onHaDialog, false);
+        document.removeEventListener("close-dialog", this._onCloseDialog, false);
+        document.removeEventListener("mousedown", this._onCloseDialog, true);
+        this._stopDialogWatch = null;
+      };
+    }
+  }
+
+  _observeDialogs() {
+    if (this._observer || typeof MutationObserver !== "function") return;
+    this._observer = new MutationObserver((records) => {
+      if (!this._dialogEl) return;
+      const yields = (name) => {
+        const tag = String(name || "").toLowerCase();
+        return tag.indexOf("hui-dialog-") === 0 || tag === "dialog-general" || tag === "ha-more-info-dialog";
+      };
+      for (const record of records) {
+        for (const node of record.addedNodes || []) {
+          const tag = (node && (node.localName || node.tagName)) || "";
+          if (yields(tag) || (node && node.children && node.children.some && node.children.some((child) => yields(child.tagName)))) {
+            this._closeDialog();
+            return;
+          }
+        }
+      }
+    });
+    this._observer.observe(document.body, { childList: true });
   }
 
   _entityPicker(initial) {
@@ -860,6 +963,11 @@ class MemoMindGlassesPanel extends HTMLElement {
   }
 
   _closeDialog() {
+    if (this._stopDialogWatch) this._stopDialogWatch();
+    if (this._observer) {
+      this._observer.disconnect();
+      this._observer = null;
+    }
     if (this._dialogEl) this._dialogEl.remove();
     this._dialogEl = null;
     this._dialog = null;
@@ -980,6 +1088,16 @@ class MemoMindGlassesPanel extends HTMLElement {
 
   _draw() {
     const root = this.shadowRoot;
+    // Drop inline styles left behind by an earlier build. The stylesheet now
+    // owns the dialog geometry, and an inline `position:fixed` from before
+    // would keep it glued to the top-left corner.
+    const portaled = (document.body.children || []).filter(
+      (node) => node && node.className === "dialog-backdrop" && node.parentNode === document.body,
+    );
+    portaled.forEach((node) => {
+      if (this._dialogEl !== node) node.remove();
+      else node.removeAttribute("style");
+    });
     // Services re-run async_setup_entry on every reload; the browser then
     // defines the panel class a second time and the old one starts rendering
     // an empty element. Keep the newest instance and remove the ghosts.
@@ -1035,9 +1153,6 @@ class MemoMindGlassesPanel extends HTMLElement {
       .card-head .card-type { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       .hint { color:var(--secondary-text-color,#666); font-size:.9rem; }
       .save-state { align-self:center; font-size:.85rem; color:var(--secondary-text-color,#666); }
-      .dialog-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.5); display:flex; align-items:flex-start; justify-content:center; padding:5vh 0; z-index:9999; }
-      .dialog { background:var(--card-background-color,#fff); color:var(--primary-text-color,#111); border-radius:12px; padding:16px; width:min(560px,92vw); max-height:88vh; overflow:auto; display:flex; flex-direction:column; gap:12px; box-shadow:0 8px 32px rgba(0,0,0,.3); }
-      .dialog-head { display:flex; justify-content:space-between; align-items:center; position:sticky; top:-16px; background:var(--card-background-color,#fff); padding:8px 0; z-index:2; }
       .dialog-head h2 { font-size:1.1rem; margin:0; }
       .gallery { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:8px; }
       .gallery-item { padding:12px; text-align:left; border:1px solid var(--divider-color,#ccc); border-radius:8px; background:var(--secondary-background-color,#f3f3f3); }
