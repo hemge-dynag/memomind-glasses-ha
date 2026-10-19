@@ -263,6 +263,13 @@ class MemoMindGlassesPanel extends HTMLElement {
     return host;
   }
 
+  _lovelaceConfig() {
+    if (!this._lovelace) {
+      this._lovelace = { config: { views: [] }, editMode: true };
+    }
+    return this._lovelace;
+  }
+
   _cardNode(card, pageIndex, cardIndex) {
     const slot = document.createElement("div");
     slot.className = "card";
@@ -282,11 +289,12 @@ class MemoMindGlassesPanel extends HTMLElement {
     down.title = "Déplacer à droite";
     down.onclick = () => this._moveCard([pageIndex], cardIndex, 1);
     const edit = document.createElement("button");
-    edit.textContent = "Config";
-    edit.title = "Éditer le YAML de la carte";
-    edit.onclick = () => this._editCardYaml(card);
+    edit.textContent = "Modifier";
+    edit.title = "Modifier la carte";
+    edit.onclick = () => this._editCard(card);
     const remove = document.createElement("button");
     remove.textContent = "✕";
+    remove.title = "Retirer la carte";
     remove.onclick = () => {
       (this._draft.pages[pageIndex].cards || []).splice(cardIndex, 1);
       this._markDirty();
@@ -294,16 +302,108 @@ class MemoMindGlassesPanel extends HTMLElement {
     cardHead.append(label, up, down, edit, remove);
     slot.append(cardHead);
 
-    slot.append(this._cardPreview(card, 260));
-
-    const entities = this._entitiesFor(card);
-    const hint = document.createElement("p");
-    hint.className = "hint";
-    hint.textContent = entities.length
-      ? `Lunettes : ${entities.slice(0, 4).join(", ")}${entities.length > 4 ? "…" : ""}`
-      : "Aucune entité détectée : cette carte ne produira pas d'écran.";
-    slot.append(hint);
+    slot.append(this._cardPreview(card, 280));
     return slot;
+  }
+
+  _editCard(card) {
+    card._editing = true;
+    card._step = card.config && card.config.type ? "configure" : "pick";
+    card._pending = card.config
+      ? JSON.parse(JSON.stringify(card.config))
+      : { type: undefined };
+    this._error = "";
+    this._markDirty();
+  }
+
+  _pickerNode(card) {
+    const box = document.createElement("div");
+    box.className = "picker-box";
+    const tag = customElements.get("hui-card-picker");
+    if (!tag || !window.loadCardHelpers) {
+      box.append(this._yamlNode(card));
+      return box;
+    }
+    const picker = document.createElement("hui-card-picker");
+    picker.hass = this._hass;
+    picker.lovelace = this._lovelaceConfig();
+    picker.addEventListener("config-changed", (event) => {
+      const config = event.detail && event.detail.config;
+      if (!config || !config.type) return;
+      card._pending = config;
+      card._step = "configure";
+      this._markDirty();
+    });
+    box.append(picker);
+    const cancel = document.createElement("button");
+    cancel.textContent = "Annuler";
+    cancel.onclick = () => this._cancelCardEdit(card);
+    box.append(cancel);
+    return box;
+  }
+
+  _configureNode(card) {
+    const box = document.createElement("div");
+    box.className = "config-box";
+    const tag = customElements.get("hui-card-element-editor");
+    if (!tag) {
+      card._yaml = JSON.stringify(card._pending || {}, null, 2);
+      box.append(this._yamlNode(card));
+      return box;
+    }
+    const editor = document.createElement("hui-card-element-editor");
+    editor.hass = this._hass;
+    editor.lovelace = this._lovelaceConfig();
+    editor.value = card._pending;
+    editor.addEventListener("config-changed", (event) => {
+      if (event.detail && event.detail.config) {
+        card._pending = event.detail.config;
+      }
+    });
+    box.append(editor);
+    const actions = document.createElement("div");
+    actions.className = "bar";
+    const back = document.createElement("button");
+    back.textContent = "← Changer de type";
+    back.onclick = () => {
+      card._step = "pick";
+      this._markDirty();
+    };
+    const save = document.createElement("button");
+    save.className = "primary";
+    save.textContent = "Ajouter la carte";
+    save.onclick = () => this._saveCardConfig(card);
+    const cancel = document.createElement("button");
+    cancel.textContent = "Annuler";
+    cancel.onclick = () => this._cancelCardEdit(card);
+    actions.append(back, save, cancel);
+    box.append(actions);
+    return box;
+  }
+
+  _saveCardConfig(card) {
+    const config = JSON.parse(JSON.stringify(card._pending || {}));
+    if (!config.type) {
+      this._error = "Choisis d'abord un type de carte";
+      this._render();
+      return;
+    }
+    card.config = config;
+    card.type = config.type;
+    card.title = config.title || "";
+    card.entities = [];
+    card._editing = false;
+    card._pending = null;
+    card._yaml = null;
+    this._error = "";
+    this._markDirty();
+  }
+
+  _cancelCardEdit(card) {
+    card._editing = false;
+    card._pending = null;
+    card._yaml = null;
+    this._render();
   }
 
   _moveCard(path, index, delta) {
@@ -408,8 +508,14 @@ class MemoMindGlassesPanel extends HTMLElement {
     (page.cards || []).forEach((card, cardIndex) => {
       const wrapper = document.createElement("div");
       wrapper.className = "slot";
-      if (card._editing) wrapper.append(this._yamlNode(card));
-      else wrapper.append(this._cardNode(card, pageIndex, cardIndex));
+      if (card._editing) {
+        wrapper.classList.add("editing");
+        wrapper.append(
+          card._step === "pick" ? this._pickerNode(card) : this._configureNode(card),
+        );
+      } else {
+        wrapper.append(this._cardNode(card, pageIndex, cardIndex));
+      }
       strip.append(wrapper);
     });
     const addCard = document.createElement("button");
@@ -417,8 +523,9 @@ class MemoMindGlassesPanel extends HTMLElement {
     addCard.textContent = "+ Carte";
     addCard.onclick = () => {
       page.cards = page.cards || [];
-      page.cards.push({ type: "entities", title: "", entities: [], config: { type: "entities", entities: [] } });
-      this._markDirty();
+      const card = { type: "", title: "", entities: [], config: null };
+      page.cards.push(card);
+      this._editCard(card);
     };
     strip.append(addCard);
     box.append(strip);
@@ -477,6 +584,9 @@ class MemoMindGlassesPanel extends HTMLElement {
       .yaml { display:flex; flex-direction:column; gap:8px; }
       .yaml textarea { width:100%; font-family:monospace; font-size:.85rem; padding:8px; border-radius:6px; border:1px solid var(--divider-color,#ccc); background:var(--card-background-color,#fff); color:inherit; }
       .config-fallback { font-size:.75rem; white-space:pre-wrap; margin:0; }
+      .slot.editing { width:420px; }
+      .picker-box, .config-box { display:flex; flex-direction:column; gap:10px; max-height:520px; overflow-y:auto; }
+      .picker-box hui-card-picker { display:block; }
       .hint { color:var(--secondary-text-color,#666); font-size:.9rem; }
       @media (max-width:700px){ .layout{grid-template-columns:1fr;} .entity-row{grid-template-columns:auto auto 1fr auto;} .entity-info{display:none;} }
     `;
