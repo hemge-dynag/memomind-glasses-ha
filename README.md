@@ -29,9 +29,9 @@ directory and restart, then add the integration from the UI.
 2. Type a name in the field next to **+ Dashboard** and press Enter or the
    button. The dashboard is created immediately, even while it is still empty.
 3. **+ Page**, then **+ Card**. A card gallery opens: entities list, gauge,
-   thermostat, markdown, tile, or *any other card* (paste its YAML, or edit it
-   later with Home Assistant's own card editor). A card is what the wearer sees
-   as one screen on the glasses.
+   thermostat, markdown, tile, or *any other card* (pick it, then paste the card
+   YAML from Home Assistant → edit card → SHOW CODE EDITOR). A card is what the
+   wearer sees as one screen on the glasses.
 4. Reorder pages within a dashboard and cards within a page with the ← / →
    and ↑ / ↓ buttons. The card badge shows the glasses screen number. The order
    in the panel is exactly the order the glasses render.

@@ -263,13 +263,6 @@ class MemoMindGlassesPanel extends HTMLElement {
     return host;
   }
 
-  _lovelaceConfig() {
-    if (!this._lovelace) {
-      this._lovelace = { config: { views: [] }, editMode: true };
-    }
-    return this._lovelace;
-  }
-
   _cardNode(card, pageIndex, cardIndex) {
     const slot = document.createElement("div");
     slot.className = "card";
@@ -360,56 +353,8 @@ class MemoMindGlassesPanel extends HTMLElement {
     const existing =
       config && config.config && config.config.type ? config.config : null;
     this._openOwnDialog(page, position, existing);
-    this._offerLovelacePicker(page, position, existing);
   }
 
-  async _offerLovelacePicker(page, position, existing) {
-    // Home Assistant's own card dialog is a best-effort upgrade: the gallery
-    // is already on screen, so a slow or missing chunk never blocks the user.
-    const dialog = await this._showLovelaceDialog(page, existing || {}, position);
-    if (dialog && this._dialogEl) this._closeDialog();
-  }
-
-  async _showLovelaceDialog(page, config, position) {
-    if (config.type === undefined) return false;
-    const names = ["hui-dialog-edit-card", "hui-dialog-create-card"];
-    for (const name of names) {
-      if (!(await this._loadElement(name))) continue;
-      const dialog = document.createElement(name);
-      dialog.hass = this._hass;
-      dialog.lovelaceConfig = this._lovelaceConfig();
-      const save = (next) => {
-        if (!next || !next.type) return;
-        this._closeLovelaceDialog();
-        this._applyDialogConfig(page, null, next, position);
-      };
-      if (name === "hui-dialog-edit-card") {
-        dialog.cardConfig = JSON.parse(JSON.stringify(config));
-        dialog.saveCardConfig = save;
-      } else {
-        dialog.saveConfig = save;
-        dialog.showDialog({ path: position === undefined ? [] : [position] });
-      }
-      document.body.append(dialog);
-      this._lovelaceDialog = dialog;
-      dialog.addEventListener(
-        "dialog-closed",
-        () => {
-          if (this._lovelaceDialog === dialog) this._lovelaceDialog = null;
-          dialog.remove();
-        },
-        { once: true },
-      );
-      if (typeof dialog.show === "function") dialog.show();
-      return true;
-    }
-    return false;
-  }
-
-  _closeLovelaceDialog() {
-    if (this._lovelaceDialog) this._lovelaceDialog.remove();
-    this._lovelaceDialog = null;
-  }
 
   _openOwnDialog(page, position, config) {
     if (this._dialogEl) this._dialogEl.remove();
@@ -513,6 +458,53 @@ class MemoMindGlassesPanel extends HTMLElement {
     head.append(title, close);
     dialog.append(head);
 
+    if (state.blank) {
+      const area = document.createElement("textarea");
+      area.className = "yaml-input";
+      area.rows = 10;
+      area.placeholder = "type: entities\nentities:\n  - light.salon";
+      area.dataset.key = "yaml";
+      area.dataset.text = "1";
+      if (state.yaml) area.value = state.yamlText || "";
+      area.oninput = () => {
+        state.yamlText = area.value;
+      };
+      const hint = document.createElement("p");
+      hint.className = "hint";
+      hint.textContent =
+        state.yamlError ||
+        "Colle ici le YAML d'une carte (celui de Home Assistant → éditer une carte → CODE).";
+      const actions = document.createElement("div");
+      actions.className = "dialog-actions";
+      const back = document.createElement("button");
+      back.textContent = "← Galerie";
+      back.onclick = () => {
+        state.blank = false;
+        state.yaml = false;
+        state.yamlError = "";
+        this._dialogError = "";
+        this._drawDialog();
+      };
+      const add = document.createElement("button");
+      add.className = "primary";
+      add.textContent = "Ajouter la carte";
+      add.onclick = () => {
+        const config = parseCardYaml(area.value || "");
+        if (!config) {
+          state.yamlError = "YAML invalide : il doit contenir au moins « type: ».";
+          state.yamlText = area.value;
+          this._drawDialog();
+          return;
+        }
+        this._finishCard(state, config);
+      };
+      actions.append(back, add);
+      dialog.append(hint, area, actions);
+      backdrop.append(dialog);
+      this._mountDialog(backdrop);
+      return;
+    }
+
     const gallery = document.createElement("div");
     gallery.className = "gallery";
     CARD_SUGGESTIONS.forEach((entry) => {
@@ -521,15 +513,16 @@ class MemoMindGlassesPanel extends HTMLElement {
       button.textContent = entry.label;
       button.onclick = () => {
         if (entry.type === "blank") {
-          this._openOwnDialog(state.page, state.position);
-          this._dialog.blank = true;
-          this._dialogError =
-            "Pas de sélecteur graphique ici : colle le YAML de ta carte.";
+          state.blank = true;
+          state.yaml = true;
+          state.yamlText = "";
+          state.yamlError = "";
+          this._dialogError = "";
           this._drawDialog();
           return;
         }
         state.type = entry.type;
-        state.blank = !entry.template;
+        state.blank = false;
         state.steps = entry.template
           ? [entry.template.map((field, index) => ({ ...field, index, value: field.value ?? field.default ?? "" }))]
           : [];
@@ -592,12 +585,6 @@ class MemoMindGlassesPanel extends HTMLElement {
       cancel.onclick = () => this._closeDialog();
       actions.append(next, cancel);
       dialog.append(actions);
-    } else if (state.blank) {
-      const hint = document.createElement("p");
-      hint.className = "hint";
-      hint.textContent =
-        "Cette carte n'a pas de formulaire intégré : ajoute-la avec Home Assistant, puis reviens ici.";
-      dialog.append(hint);
     }
 
     if (this._dialogError) {
@@ -628,20 +615,15 @@ class MemoMindGlassesPanel extends HTMLElement {
     }
 
     backdrop.append(dialog);
+    this._mountDialog(backdrop);
+  }
+
+  _mountDialog(backdrop) {
     backdrop.addEventListener("click", (event) => {
       if (event.target === backdrop) this._closeDialog();
     });
     document.body.append(backdrop);
     this._dialogEl = backdrop;
-  }
-
-  _openLovelaceCardDialog(page, position) {
-    this._openOwnDialog(page, position);
-    this._dialog.blank = true;
-    this._dialogError =
-      "Pas de sélecteur graphique disponible ici : colle le YAML de ta carte, ou prends un type de la galerie.";
-    this._drawDialog();
-    this._offerLovelacePicker(page, position);
   }
 
   _entityPicker(initial) {
@@ -765,7 +747,12 @@ class MemoMindGlassesPanel extends HTMLElement {
     } else {
       config = buildSuggestionConfig(state);
     }
+    this._finishCard(state, config);
+  }
+
+  _finishCard(state, config) {
     const card = { type: "", title: "", entities: [], config: null };
+    const token = this._draft;
     const position = state.position;
     let page = state.page;
     if (!page || !_containsPage(this._draft, page)) {
@@ -992,15 +979,16 @@ class MemoMindGlassesPanel extends HTMLElement {
       .card-head .card-type { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       .hint { color:var(--secondary-text-color,#666); font-size:.9rem; }
       .save-state { align-self:center; font-size:.85rem; color:var(--secondary-text-color,#666); }
-      .dialog-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.5); display:flex; align-items:center; justify-content:center; z-index:9999; }
-      .dialog { background:var(--card-background-color,#fff); color:var(--primary-text-color,#111); border-radius:12px; padding:16px; width:min(560px,92vw); max-height:86vh; overflow:auto; display:flex; flex-direction:column; gap:12px; }
-      .dialog-head { display:flex; justify-content:space-between; align-items:center; }
+      .dialog-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.5); display:flex; align-items:flex-start; justify-content:center; padding:5vh 0; z-index:9999; }
+      .dialog { background:var(--card-background-color,#fff); color:var(--primary-text-color,#111); border-radius:12px; padding:16px; width:min(560px,92vw); max-height:88vh; overflow:auto; display:flex; flex-direction:column; gap:12px; box-shadow:0 8px 32px rgba(0,0,0,.3); }
+      .dialog-head { display:flex; justify-content:space-between; align-items:center; position:sticky; top:-16px; background:var(--card-background-color,#fff); padding:8px 0; z-index:2; }
       .dialog-head h2 { font-size:1.1rem; margin:0; }
       .gallery { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:8px; }
-      .gallery-item { padding:12px; text-align:left; }
+      .gallery-item { padding:12px; text-align:left; border:1px solid var(--divider-color,#ccc); border-radius:8px; background:var(--secondary-background-color,#f3f3f3); }
       .fields { display:flex; flex-direction:column; gap:10px; }
       .field { display:flex; flex-direction:column; gap:4px; font-size:.9rem; }
       .dialog-actions { display:flex; gap:8px; justify-content:flex-end; }
+      .yaml-input { width:100%; font-family:monospace; font-size:.85rem; padding:8px; border-radius:6px; border:1px solid var(--divider-color,#ccc); background:transparent; color:inherit; }
       .entity-picker { display:flex; flex-direction:column; gap:6px; }
       .chips { display:flex; flex-wrap:wrap; gap:6px; }
       .chip { background:var(--secondary-background-color,#eee); border-radius:999px; padding:4px 10px; font-size:.85rem; display:inline-flex; gap:6px; align-items:center; }
