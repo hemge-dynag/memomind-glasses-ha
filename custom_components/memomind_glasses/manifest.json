@@ -1,0 +1,11 @@
+{
+  "domain": "memomind_glasses",
+  "name": "MemoMind Glasses",
+  "codeowners": ["@hemge-dynag"],
+  "config_flow": true,
+  "documentation": "https://github.com/hemge-dynag/memomind-glasses-ha",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/hemge-dynag/memomind-glasses-ha/issues",
+  "requirements": [],
+  "version": "1.0.0"
+}

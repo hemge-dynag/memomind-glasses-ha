@@ -1,0 +1,368 @@
+const API = "/api/memomind_glasses/dashboards";
+
+class MemoMindGlassesPanel extends HTMLElement {
+  constructor() {
+    super();
+    this._hass = null;
+    this._dashboards = [];
+    this._selected = null;
+    this._draft = null;
+    this._busy = false;
+    this._error = "";
+    this.attachShadow({ mode: "open" });
+  }
+
+  set hass(hass) {
+    const first = !this._hass;
+    this._hass = hass;
+    if (first) this._reload();
+  }
+
+  connectedCallback() {
+    this._render();
+  }
+
+  async _call(method, path = "", body = undefined) {
+    this._busy = true;
+    this._error = "";
+    this._render();
+    try {
+      const result = await this._hass.callApi(method, path + API, body);
+      return result;
+    } catch (error) {
+      this._error = String(error && error.message ? error.message : error);
+      return null;
+    } finally {
+      this._busy = false;
+      this._render();
+    }
+  }
+
+  async _reload() {
+    const result = await this._call("GET");
+    this._dashboards = (result && result.dashboards) || [];
+    if (this._selected !== null && this._selected >= this._dashboards.length) {
+      this._selected = null;
+      this._draft = null;
+    }
+    this._render();
+  }
+
+  async _open(index) {
+    const result = await this._call("GET", `/${index}`);
+    if (!result) return;
+    this._selected = index;
+    this._draft = JSON.parse(JSON.stringify(result.source || { pages: [] }));
+    this._render();
+  }
+
+  async _create() {
+    const name = window.prompt("Nom du dashboard pour les lunettes", "Lunettes");
+    if (!name) return;
+    const result = await this._call("POST", "", { action: "create", name });
+    if (!result) return;
+    await this._reload();
+    if (this._dashboards.length) await this._open(this._dashboards.length - 1);
+  }
+
+  async _remove(index) {
+    if (!window.confirm("Supprimer ce dashboard ?")) return;
+    const result = await this._call("DELETE", `/${index}`);
+    if (result === null && this._error) return;
+    this._selected = null;
+    this._draft = null;
+    await this._reload();
+  }
+
+  async _save() {
+    if (this._selected === null || !this._draft) return;
+    const result = await this._call("PUT", `/${this._selected}`, this._draft);
+    if (!result) return;
+    this._draft = JSON.parse(JSON.stringify(result.dashboard));
+    await this._reload();
+  }
+
+  _dirty() {
+    return this._draft !== null;
+  }
+
+  _entityRow(entity, path, index) {
+    const row = document.createElement("div");
+    row.className = "entity-row";
+
+    const up = document.createElement("button");
+    up.textContent = "↑";
+    up.title = "Monter";
+    up.onclick = () => this._move(path, index, -1);
+    const down = document.createElement("button");
+    down.textContent = "↓";
+    down.title = "Descendre";
+    down.onclick = () => this._move(path, index, 1);
+    const remove = document.createElement("button");
+    remove.textContent = "✕";
+    remove.title = "Retirer";
+    remove.onclick = () => this._removeEntity(path, index);
+
+    const id = document.createElement("code");
+    id.textContent = entity.entity;
+    const state = this._hass.states[entity.entity];
+    const friendly = state ? state.attributes.friendly_name || "" : "entité inconnue";
+    const info = document.createElement("span");
+    info.className = "entity-info";
+    info.textContent = friendly;
+
+    const name = document.createElement("input");
+    name.placeholder = "Nom affiché";
+    name.value = entity.name || "";
+    name.oninput = () => {
+      entity.name = name.value;
+      this._markDirty();
+    };
+
+    row.append(up, down, id, info, name, remove);
+    return row;
+  }
+
+  _move(path, index, delta) {
+    const list = this._listAt(path);
+    const target = index + delta;
+    if (!list || target < 0 || target >= list.length) return;
+    const [item] = list.splice(index, 1);
+    list.splice(target, 0, item);
+    this._markDirty();
+  }
+
+  _removeEntity(path, index) {
+    const list = this._listAt(path);
+    if (!list) return;
+    list.splice(index, 1);
+    this._markDirty();
+  }
+
+  _listAt(path) {
+    let node = this._draft;
+    for (const step of path) {
+      if (!node) return null;
+      node = step === "cards" ? node.cards : node.pages[step];
+    }
+    return node && node.entities;
+  }
+
+  _markDirty() {
+    this._render();
+  }
+
+  _addEntity(path) {
+    const raw = window.prompt("Entité (ex: light.salon)", "light.");
+    if (!raw) return;
+    const entity = raw.trim();
+    if (!entity.includes(".")) return;
+    const list = this._listAt(path);
+    if (!list) return;
+    list.push({ entity });
+    this._markDirty();
+  }
+
+  _pageNode(page, pageIndex) {
+    const box = document.createElement("section");
+    box.className = "page";
+
+    const head = document.createElement("header");
+    const title = document.createElement("input");
+    title.className = "page-title";
+    title.placeholder = "Titre de la page";
+    title.value = page.title || "";
+    title.oninput = () => {
+      page.title = title.value;
+      this._markDirty();
+    };
+    const up = document.createElement("button");
+    up.textContent = "↑";
+    up.onclick = () => this._movePage(pageIndex, -1);
+    const down = document.createElement("button");
+    down.textContent = "↓";
+    down.onclick = () => this._movePage(pageIndex, 1);
+    const remove = document.createElement("button");
+    remove.textContent = "✕";
+    remove.onclick = () => this._removePage(pageIndex);
+    head.append(title, up, down, remove);
+    box.append(head);
+
+    (page.cards || []).forEach((card, cardIndex) => {
+      const cardBox = document.createElement("div");
+      cardBox.className = "card";
+      const cardHead = document.createElement("div");
+      cardHead.className = "card-head";
+      const cardTitle = document.createElement("input");
+      cardTitle.placeholder = "Titre de la carte (optionnel)";
+      cardTitle.value = card.title || "";
+      cardTitle.oninput = () => {
+        card.title = cardTitle.value;
+        this._markDirty();
+      };
+      const add = document.createElement("button");
+      add.textContent = "+ Entité";
+      add.onclick = () => this._addEntity([pageIndex, "cards", cardIndex]);
+      cardHead.append(cardTitle, add);
+      cardBox.append(cardHead);
+
+      (card.entities || []).forEach((entity, entityIndex) => {
+        cardBox.append(
+          this._entityRow(entity, [pageIndex, "cards", cardIndex], entityIndex),
+        );
+      });
+      box.append(cardBox);
+    });
+
+    const addCard = document.createElement("button");
+    addCard.className = "ghost";
+    addCard.textContent = "+ Carte";
+    addCard.onclick = () => {
+      page.cards = page.cards || [];
+      page.cards.push({ type: "entities", title: "", entities: [] });
+      this._markDirty();
+    };
+    box.append(addCard);
+    return box;
+  }
+
+  _movePage(index, delta) {
+    const pages = this._draft.pages || [];
+    const target = index + delta;
+    if (target < 0 || target >= pages.length) return;
+    const [page] = pages.splice(index, 1);
+    pages.splice(target, 0, page);
+    this._markDirty();
+  }
+
+  _removePage(index) {
+    (this._draft.pages || []).splice(index, 1);
+    this._markDirty();
+  }
+
+  _render() {
+    if (!this.shadowRoot) return;
+    const root = this.shadowRoot;
+    root.innerHTML = "";
+    const style = document.createElement("style");
+    style.textContent = `
+      :host { display:block; padding:16px; font-family: var(--ha-font-family-body, sans-serif); }
+      h1 { font-size:1.4rem; margin:0 0 12px; }
+      .bar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; }
+      button { font:inherit; padding:6px 10px; border-radius:6px; border:1px solid var(--divider-color,#ccc); background:var(--card-background-color,#fff); cursor:pointer; }
+      button.primary { background:var(--primary-color,#03a9f4); color:var(--text-primary-color,#fff); border-color:transparent; }
+      button.ghost { border-style:dashed; }
+      button:disabled { opacity:.5; cursor:default; }
+      .layout { display:grid; grid-template-columns:260px 1fr; gap:16px; }
+      .list { display:flex; flex-direction:column; gap:6px; }
+      .list button { text-align:left; }
+      .list button.active { outline:2px solid var(--primary-color,#03a9f4); }
+      .pages { display:flex; flex-direction:column; gap:14px; }
+      .page, .card { border:1px solid var(--divider-color,#ddd); border-radius:10px; padding:10px; background:var(--card-background-color,#fff); }
+      .page header, .card-head { display:flex; gap:6px; align-items:center; margin-bottom:8px; }
+      input { font:inherit; padding:6px 8px; border-radius:6px; border:1px solid var(--divider-color,#ccc); background:transparent; color:inherit; min-width:0; }
+      .page-title { flex:1; font-weight:600; }
+      .card-head input { flex:1; }
+      .entity-row { display:grid; grid-template-columns:auto auto minmax(120px,1fr) minmax(80px,1fr) minmax(100px,1fr) auto; gap:6px; align-items:center; padding:4px 0; }
+      .entity-info { color:var(--secondary-text-color,#666); font-size:.9rem; }
+      .error { color:var(--error-color,#c62828); margin-bottom:12px; }
+      .hint { color:var(--secondary-text-color,#666); font-size:.9rem; }
+      @media (max-width:700px){ .layout{grid-template-columns:1fr;} .entity-row{grid-template-columns:auto auto 1fr auto;} .entity-info{display:none;} }
+    `;
+    root.append(style);
+
+    const title = document.createElement("h1");
+    title.textContent = "MemoMind Glasses";
+    root.append(title);
+
+    if (this._error) {
+      const error = document.createElement("div");
+      error.className = "error";
+      error.textContent = this._error;
+      root.append(error);
+    }
+
+    const bar = document.createElement("div");
+    bar.className = "bar";
+    const create = document.createElement("button");
+    create.className = "primary";
+    create.textContent = "+ Dashboard";
+    create.onclick = () => this._create();
+    const reload = document.createElement("button");
+    reload.textContent = "Recharger";
+    reload.onclick = () => this._reload();
+    bar.append(create, reload);
+    if (this._draft) {
+      const save = document.createElement("button");
+      save.className = "primary";
+      save.textContent = "Enregistrer";
+      save.disabled = this._busy;
+      save.onclick = () => this._save();
+      bar.append(save);
+    }
+    root.append(bar);
+
+    const layout = document.createElement("div");
+    layout.className = "layout";
+
+    const list = document.createElement("div");
+    list.className = "list";
+    this._dashboards.forEach((dashboard, index) => {
+      const button = document.createElement("button");
+      button.textContent = `${dashboard.name} (${dashboard.page_count})`;
+      button.className = index === this._selected ? "active" : "";
+      button.onclick = () => this._open(index);
+      list.append(button);
+    });
+    if (!this._dashboards.length) {
+      const hint = document.createElement("p");
+      hint.className = "hint";
+      hint.textContent = "Aucun dashboard. Crée-en un pour les lunettes.";
+      list.append(hint);
+    }
+    layout.append(list);
+
+    const detail = document.createElement("div");
+    if (this._draft) {
+      const head = document.createElement("div");
+      head.className = "bar";
+      const name = document.createElement("input");
+      name.value = this._draft.name || "";
+      name.placeholder = "Nom du dashboard";
+      name.oninput = () => {
+        this._draft.name = name.value;
+      };
+      const remove = document.createElement("button");
+      remove.textContent = "Supprimer";
+      remove.onclick = () => this._remove(this._selected);
+      head.append(name, remove);
+      detail.append(head);
+
+      const pages = document.createElement("div");
+      pages.className = "pages";
+      (this._draft.pages || []).forEach((page, index) => {
+        pages.append(this._pageNode(page, index));
+      });
+      const addPage = document.createElement("button");
+      addPage.className = "ghost";
+      addPage.textContent = "+ Page";
+      addPage.onclick = () => {
+        this._draft.pages = this._draft.pages || [];
+        this._draft.pages.push({ title: "", cards: [] });
+        this._markDirty();
+      };
+      pages.append(addPage);
+      detail.append(pages);
+    } else {
+      const hint = document.createElement("p");
+      hint.className = "hint";
+      hint.textContent =
+        "Sélectionne un dashboard pour composer ses pages et ses cartes. Une carte = un écran sur les lunettes.";
+      detail.append(hint);
+    }
+    layout.append(detail);
+    root.append(layout);
+  }
+}
+
+customElements.define("memomind-glasses-panel", MemoMindGlassesPanel);
