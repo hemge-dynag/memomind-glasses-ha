@@ -1,4 +1,5 @@
-const API = "/api/memomind_glasses/dashboards";
+// hass.callApi() prefixes "/api/" itself, so the path must not include it.
+const API_PATH = "memomind_glasses/dashboards";
 
 class MemoMindGlassesPanel extends HTMLElement {
   constructor() {
@@ -52,7 +53,7 @@ class MemoMindGlassesPanel extends HTMLElement {
     this._render();
     try {
       if (!this._hass) throw new Error("Home Assistant non connecté");
-      const result = await this._hass.callApi(method, path + API, body);
+      const result = await this._hass.callApi(method, `${API_PATH}${path}`, body);
       return result === undefined ? {} : result;
     } catch (error) {
       const status = error && error.status ? ` (${error.status})` : "";
