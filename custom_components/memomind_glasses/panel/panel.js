@@ -798,7 +798,8 @@ class MemoMindGlassesPanel extends HTMLElement {
       for (const record of records) {
         for (const node of record.addedNodes || []) {
           const tag = (node && (node.localName || node.tagName)) || "";
-          if (yields(tag) || (node && node.children && node.children.some && node.children.some((child) => yields(child.tagName)))) {
+          const kids = node ? Array.from(node.children || []) : [];
+          if (yields(tag) || kids.some((child) => yields(child.localName || child.tagName))) {
             this._closeDialog();
             return;
           }
@@ -1093,7 +1094,8 @@ class MemoMindGlassesPanel extends HTMLElement {
       const title = document.createElement("h2");
       title.textContent = "MemoMind Glasses n'a pas pu s'afficher";
       const detail = document.createElement("p");
-      detail.textContent = error && error.message ? error.message : String(error);
+      const text = error && error.message ? error.message : String(error);
+      detail.textContent = `Détail technique : ${text}`;
       const hint = document.createElement("p");
       hint.textContent = "Recharge la page (Ctrl+Maj+R). Si ça persiste, dis-le à Memo.";
       box.append(title, detail, hint);
@@ -1107,8 +1109,10 @@ class MemoMindGlassesPanel extends HTMLElement {
     const root = this.shadowRoot;
     // Drop inline styles left behind by an earlier build. The stylesheet now
     // owns the dialog geometry, and an inline `position:fixed` from before
-    // would keep it glued to the top-left corner.
-    const portaled = (document.body.children || []).filter(
+    // would keep it glued to the top-left corner. `document.body.children` is
+    // an HTMLCollection: it has no `.filter`, and turning it into an array
+    // must never be able to blank the panel.
+    const portaled = Array.from(document.body.children || []).filter(
       (node) => node && node.className === "dialog-backdrop" && node.parentNode === document.body,
     );
     portaled.forEach((node) => {
