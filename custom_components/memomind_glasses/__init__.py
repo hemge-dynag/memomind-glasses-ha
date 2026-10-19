@@ -31,25 +31,55 @@ async def async_setup_entry(hass: HomeAssistant, entry) -> bool:
     await store.async_load()
     hass.data.setdefault(DOMAIN, {})["store"] = store
 
-    for view in VIEWS:
-        hass.http.register_view(view)
+    register_views(hass)
 
-    await hass.http.async_register_static_paths(
-        [StaticPathConfig(f"/{DOMAIN}", str(PANEL_DIR), cache_headers=False)]
-    )
+    await _async_register_panel_dir(hass)
 
-    await panel_custom.async_register_panel(
-        hass,
-        webcomponent_name=PANEL_COMPONENT,
-        frontend_url_path=PANEL_URL,
-        module_url=f"/{DOMAIN}/panel.js",
-        sidebar_title=PANEL_TITLE,
-        sidebar_icon=PANEL_ICON,
-        require_admin=False,
-        config={},
-        embed_iframe=False,
-    )
+    try:
+        await panel_custom.async_register_panel(
+            hass,
+            webcomponent_name=PANEL_COMPONENT,
+            frontend_url_path=PANEL_URL,
+            module_url=f"/{DOMAIN}/panel.js",
+            sidebar_title=PANEL_TITLE,
+            sidebar_icon=PANEL_ICON,
+            require_admin=False,
+            config={},
+            embed_iframe=False,
+        )
+    except Exception:  # noqa: BLE001 - keep the API usable even if the panel fails
+        _LOGGER.exception("MemoMind Glasses: unable to register the sidebar panel")
     return True
+
+
+def register_views(hass: HomeAssistant) -> None:
+    """Registers the HTTP views once per Home Assistant instance."""
+
+    registered = hass.data.setdefault(DOMAIN, {}).setdefault("views", set())
+    for view in VIEWS:
+        if view.name in registered:
+            continue
+        hass.http.register_view(view)
+        registered.add(view.name)
+        _LOGGER.debug("MemoMind Glasses: registered %s", view.url)
+
+
+async def _async_register_panel_dir(hass: HomeAssistant) -> None:
+    """Serves the panel directory with the API of the running HA version."""
+
+    path = f"/{DOMAIN}"
+    static_paths = hass.data[DOMAIN].setdefault("static_paths", set())
+    if path in static_paths:
+        return
+    try:
+        await hass.http.async_register_static_paths(
+            [StaticPathConfig(path, str(PANEL_DIR), cache_headers=False)]
+        )
+    except AttributeError:
+        hass.http.register_static_path(path, str(PANEL_DIR), cache_headers=False)
+    except RuntimeError as error:
+        _LOGGER.warning("MemoMind Glasses: static path already registered: %s", error)
+    static_paths.add(path)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry) -> bool:
