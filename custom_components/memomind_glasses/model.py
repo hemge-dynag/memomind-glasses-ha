@@ -57,25 +57,90 @@ def _clean_entity(value: Any) -> dict[str, Any] | None:
     return entry
 
 
+def _clean_config(value: Any, depth: int = 0) -> Any:
+    """Keeps a Lovelace card config JSON-safe and bounded."""
+
+    if depth > 8:
+        return None
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for key, item in list(value.items())[:48]:
+            key = _text(key, 48)
+            if not key:
+                continue
+            cleaned = _clean_config(item, depth + 1)
+            if cleaned is not None:
+                out[key] = cleaned
+        return out
+    if isinstance(value, (list, tuple)):
+        return [
+            cleaned
+            for raw in list(value)[:MAX_ROWS]
+            if (cleaned := _clean_config(raw, depth + 1)) is not None
+        ]
+    if isinstance(value, bool) or isinstance(value, (int, float)):
+        return value
+    if value is None:
+        return None
+    return _text(value, 240)
+
+
+def _entity_ids_from_config(value: Any, found: list[str], depth: int = 0) -> None:
+    """Walks a Lovelace config and collects the entity ids it references."""
+
+    if depth > 8 or len(found) >= MAX_ROWS:
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in ("entity", "entity_id") and isinstance(item, str):
+                entity_id = _clean_entity_id(item)
+                if entity_id and entity_id not in found:
+                    found.append(entity_id)
+            elif key == "entities":
+                if isinstance(item, list):
+                    for raw in item:
+                        if isinstance(raw, str):
+                            entity_id = _clean_entity_id(raw)
+                            if entity_id and entity_id not in found:
+                                found.append(entity_id)
+                        else:
+                            _entity_ids_from_config(raw, found, depth + 1)
+                elif isinstance(item, str):
+                    entity_id = _clean_entity_id(item)
+                    if entity_id and entity_id not in found:
+                        found.append(entity_id)
+            else:
+                _entity_ids_from_config(item, found, depth + 1)
+    elif isinstance(value, list):
+        for raw in value[:MAX_ROWS]:
+            _entity_ids_from_config(raw, found, depth + 1)
+
+
 def _clean_card(value: Any) -> dict[str, Any] | None:
+    """Normalises one card, keeping its Lovelace config for the live preview."""
+
     if not isinstance(value, dict):
         return None
-    card_type = _text(value.get("type"), 24) or "entities"
-    if card_type != "entities":
-        raise ModelError(f"unsupported card type: {card_type}")
+    card_type = _text(value.get("type"), 48) or "entities"
+    config = _clean_config(value) or {}
+    config.pop("config", None)
+    config["type"] = card_type
     entities = []
     for raw in value.get("entities") or []:
         entry = _clean_entity(raw)
         if entry is not None:
             entities.append(entry)
+    if not entities:
+        ids: list[str] = []
+        _entity_ids_from_config(value, ids)
+        entities = [{"entity": entity_id} for entity_id in ids]
     if len(entities) > MAX_ROWS:
         raise ModelError(f"a card holds at most {MAX_ROWS} rows")
-    if not entities:
-        return None
     return {
-        "type": "entities",
+        "type": card_type,
         "title": _text(value.get("title"), MAX_TITLE),
         "entities": entities,
+        "config": config,
     }
 
 
@@ -89,6 +154,9 @@ def clean_page(value: Any) -> dict[str, Any] | None:
         card = _clean_card(raw)
         if card is not None:
             cards.append(card)
+    cards = [
+        card for card in cards if card["entities"] or card["type"] != "entities"
+    ]
     if not cards:
         return None
     total = sum(len(card["entities"]) for card in cards)
@@ -156,6 +224,8 @@ def wire_pages(dashboard: dict[str, Any]) -> list[dict[str, Any]]:
             pages.append(
                 {
                     "title": title,
+                    "cardtype": card.get("type", "entities"),
+                    "config": card.get("config") or {},
                     "entities": [
                         {
                             "id": entity["entity"],

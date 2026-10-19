@@ -33,13 +33,15 @@ def test_clean_dashboard_keeps_order_and_drops_junk():
     out = model.clean_dashboard(raw)
     assert out["name"] == "Salon"
     assert len(out["pages"]) == 1
-    entities = out["pages"][0]["cards"][0]["entities"]
+    card = out["pages"][0]["cards"][0]
+    entities = card["entities"]
     assert [e["entity"] for e in entities] == [
         "light.salon",
         "light.cuisine",
         "light.extra",
     ]
     assert entities[2]["icon"] == "lamp"
+    assert card["config"]["type"] == "entities"
 
 
 def test_wire_pages_flattens_cards_into_glasses_pages():
@@ -157,10 +159,17 @@ def test_empty_dashboard_survives_round_trip():
     assert model.dashboard_summary(0, created)["page_count"] == 0
 
 
-def test_invalid_card_type_is_reported():
-    try:
-        model.clean_page({"cards": [{"type": "weather", "entities": ["sensor.x"]}]})
-    except model.ModelError as error:
-        assert "weather" in str(error)
-    else:
-        raise AssertionError("expected ModelError")
+def test_any_lovelace_card_type_is_kept():
+    page = model.clean_page(
+        {
+            "cards": [
+                {"type": "weather", "entity": "weather.maison"},
+                {"type": "light", "entity": "light.cuisine"},
+                {"type": "markdown", "content": "**Salut**"},
+            ]
+        }
+    )
+    assert [card["type"] for card in page["cards"]] == ["weather", "light", "markdown"]
+    assert page["cards"][0]["entities"] == [{"entity": "weather.maison"}]
+    assert page["cards"][2]["entities"] == []
+    assert page["cards"][2]["config"]["content"] == "**Salut**"

@@ -222,6 +222,162 @@ class MemoMindGlassesPanel extends HTMLElement {
     return (card.entities || []).map((entity) => entity.entity);
   }
 
+  _cardConfig(card) {
+    if (card.config && typeof card.config === "object") return card.config;
+    const config = { type: card.type || "entities" };
+    if (card.title) config.title = card.title;
+    if (card.entities && card.entities.length) {
+      config.entities = card.entities.map((row) =>
+        row.name ? { entity: row.entity, name: row.name } : row.entity,
+      );
+    }
+    return config;
+  }
+
+  _cardPreview(card, height) {
+    const host = document.createElement("div");
+    host.className = "preview";
+    host.style.maxHeight = `${height}px`;
+    const build = () => {
+      const helpers = window.loadCardHelpers;
+      if (typeof helpers !== "function") return null;
+      return helpers()
+        .then((loaded) => {
+          if (!loaded || typeof loaded.createCardElement !== "function") return null;
+          const element = loaded.createCardElement(this._cardConfig(card));
+          element.hass = this._hass;
+          return element;
+        })
+        .catch(() => null);
+    };
+    Promise.resolve(build()).then((element) => {
+      if (!element) {
+        const fallback = document.createElement("pre");
+        fallback.className = "config-fallback";
+        fallback.textContent = JSON.stringify(this._cardConfig(card), null, 2);
+        host.append(fallback);
+        return;
+      }
+      host.append(element);
+    });
+    return host;
+  }
+
+  _cardNode(card, pageIndex, cardIndex) {
+    const slot = document.createElement("div");
+    slot.className = "card";
+    slot.title = "Une carte = un écran sur les lunettes";
+
+    const cardHead = document.createElement("div");
+    cardHead.className = "card-head";
+    const label = document.createElement("span");
+    label.className = "card-type";
+    label.textContent = card.type || "entities";
+    const up = document.createElement("button");
+    up.textContent = "←";
+    up.title = "Déplacer à gauche";
+    up.onclick = () => this._moveCard([pageIndex], cardIndex, -1);
+    const down = document.createElement("button");
+    down.textContent = "→";
+    down.title = "Déplacer à droite";
+    down.onclick = () => this._moveCard([pageIndex], cardIndex, 1);
+    const edit = document.createElement("button");
+    edit.textContent = "Config";
+    edit.title = "Éditer le YAML de la carte";
+    edit.onclick = () => this._editCardYaml(card);
+    const remove = document.createElement("button");
+    remove.textContent = "✕";
+    remove.onclick = () => {
+      (this._draft.pages[pageIndex].cards || []).splice(cardIndex, 1);
+      this._markDirty();
+    };
+    cardHead.append(label, up, down, edit, remove);
+    slot.append(cardHead);
+
+    slot.append(this._cardPreview(card, 260));
+
+    const entities = this._entitiesFor(card);
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = entities.length
+      ? `Lunettes : ${entities.slice(0, 4).join(", ")}${entities.length > 4 ? "…" : ""}`
+      : "Aucune entité détectée : cette carte ne produira pas d'écran.";
+    slot.append(hint);
+    return slot;
+  }
+
+  _moveCard(path, index, delta) {
+    let node = this._draft;
+    for (const step of path) node = node.pages[step];
+    const cards = node.cards || [];
+    const target = index + delta;
+    if (target < 0 || target >= cards.length) return;
+    const [item] = cards.splice(index, 1);
+    cards.splice(target, 0, item);
+    this._markDirty();
+  }
+
+  _editCardYaml(card) {
+    const config = this._cardConfig(card);
+    card._editing = true;
+    card._yaml = JSON.stringify(config, null, 2);
+    this._markDirty();
+  }
+
+  _applyCardYaml(card) {
+    let parsed;
+    try {
+      parsed = JSON.parse(card._yaml || "{}");
+    } catch (error) {
+      this._error = `JSON invalide : ${error.message}`;
+      this._render();
+      return;
+    }
+    if (!parsed || typeof parsed !== "object" || !parsed.type) {
+      this._error = "La carte doit contenir au moins \"type\"";
+      this._render();
+      return;
+    }
+    card.config = parsed;
+    card.type = parsed.type;
+    card.title = parsed.title || "";
+    if (Array.isArray(parsed.entities)) {
+      card.entities = parsed.entities
+        .map((row) => (typeof row === "string" ? row : row && row.entity))
+        .filter((id) => typeof id === "string" && id.includes("."))
+        .map((id) => ({ entity: id }));
+    }
+    card._editing = false;
+    card._yaml = null;
+    this._error = "";
+    this._markDirty();
+  }
+
+  _yamlNode(card) {
+    const box = document.createElement("div");
+    box.className = "yaml";
+    const area = document.createElement("textarea");
+    area.spellcheck = false;
+    area.value = card._yaml || "";
+    area.rows = 12;
+    area.oninput = () => {
+      card._yaml = area.value;
+    };
+    const apply = document.createElement("button");
+    apply.className = "primary";
+    apply.textContent = "Appliquer";
+    apply.onclick = () => this._applyCardYaml(card);
+    const cancel = document.createElement("button");
+    cancel.textContent = "Annuler";
+    cancel.onclick = () => {
+      card._editing = false;
+      card._yaml = null;
+      this._markDirty();
+    };
+    box.append(area, apply, cancel);
+    return box;
+  }
+
   _pageNode(page, pageIndex) {
     const box = document.createElement("section");
     box.className = "page";
@@ -247,72 +403,25 @@ class MemoMindGlassesPanel extends HTMLElement {
     head.append(title, up, down, remove);
     box.append(head);
 
+    const strip = document.createElement("div");
+    strip.className = "strip";
     (page.cards || []).forEach((card, cardIndex) => {
-      const cardBox = document.createElement("div");
-      cardBox.className = "card";
-      const cardHead = document.createElement("div");
-      cardHead.className = "card-head";
-      const cardTitle = document.createElement("input");
-      cardTitle.placeholder = "Titre de la carte (optionnel)";
-      cardTitle.value = card.title || "";
-      cardTitle.oninput = () => {
-        card.title = cardTitle.value;
-        this._markDirty();
-      };
-      const add = document.createElement("button");
-      add.textContent = "+ Entité";
-      add.onclick = () => this._addEntity([pageIndex, "cards", cardIndex]);
-      cardHead.append(cardTitle, add);
-      cardBox.append(cardHead);
-
-      const key = [pageIndex, "cards", cardIndex].join("/");
-      const picker = document.createElement("div");
-      picker.className = "picker";
-      const input = document.createElement("input");
-      input.placeholder = "light.salon — ou tape pour chercher";
-      input.value = this._entityInput[key] || "";
-      input.setAttribute("list", `entities-${key.replace(/\//g, "-")}`);
-      input.oninput = () => {
-        this._entityInput[key] = input.value;
-      };
-      input.onkeydown = (event) => {
-        if (event.key === "Enter") {
-          event.preventDefault();
-          this._addEntity([pageIndex, "cards", cardIndex]);
-        }
-      };
-      const datalist = document.createElement("datalist");
-      datalist.id = `entities-${key.replace(/\//g, "-")}`;
-      const ids = Object.keys(this._hass ? this._hass.states || {} : {});
-      ids.sort();
-      ids.slice(0, 400).forEach((id) => {
-        const option = document.createElement("option");
-        option.value = id;
-        datalist.append(option);
-      });
-      const addInline = document.createElement("button");
-      addInline.textContent = "Ajouter";
-      addInline.onclick = () => this._addEntity([pageIndex, "cards", cardIndex]);
-      picker.append(input, datalist, addInline);
-      cardBox.append(picker);
-
-      (card.entities || []).forEach((entity, entityIndex) => {
-        cardBox.append(
-          this._entityRow(entity, [pageIndex, "cards", cardIndex], entityIndex),
-        );
-      });
-      box.append(cardBox);
+      const wrapper = document.createElement("div");
+      wrapper.className = "slot";
+      if (card._editing) wrapper.append(this._yamlNode(card));
+      else wrapper.append(this._cardNode(card, pageIndex, cardIndex));
+      strip.append(wrapper);
     });
-
     const addCard = document.createElement("button");
-    addCard.className = "ghost";
+    addCard.className = "ghost add-card";
     addCard.textContent = "+ Carte";
     addCard.onclick = () => {
       page.cards = page.cards || [];
-      page.cards.push({ type: "entities", title: "", entities: [] });
+      page.cards.push({ type: "entities", title: "", entities: [], config: { type: "entities", entities: [] } });
       this._markDirty();
     };
-    box.append(addCard);
+    strip.append(addCard);
+    box.append(strip);
     return box;
   }
 
@@ -359,6 +468,15 @@ class MemoMindGlassesPanel extends HTMLElement {
       button.danger { background:var(--error-color,#c62828); color:#fff; border-color:transparent; }
       .picker { display:flex; gap:6px; margin:6px 0 10px; }
       .picker input { flex:1; }
+      .strip { display:flex; gap:14px; overflow-x:auto; overflow-y:hidden; padding-bottom:10px; align-items:flex-start; }
+      .slot { flex:0 0 auto; width:340px; }
+      .card { max-height:420px; overflow:hidden; display:flex; flex-direction:column; }
+      .card .preview { overflow-y:auto; max-height:260px; padding:4px 0; }
+      .card-type { font-size:.8rem; text-transform:uppercase; letter-spacing:.04em; color:var(--secondary-text-color,#666); flex:1; }
+      .add-card { flex:0 0 auto; align-self:stretch; min-height:120px; width:140px; }
+      .yaml { display:flex; flex-direction:column; gap:8px; }
+      .yaml textarea { width:100%; font-family:monospace; font-size:.85rem; padding:8px; border-radius:6px; border:1px solid var(--divider-color,#ccc); background:var(--card-background-color,#fff); color:inherit; }
+      .config-fallback { font-size:.75rem; white-space:pre-wrap; margin:0; }
       .hint { color:var(--secondary-text-color,#666); font-size:.9rem; }
       @media (max-width:700px){ .layout{grid-template-columns:1fr;} .entity-row{grid-template-columns:auto auto 1fr auto;} .entity-info{display:none;} }
     `;
