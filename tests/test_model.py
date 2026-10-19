@@ -27,7 +27,7 @@ def test_clean_dashboard_keeps_order_and_drops_junk():
                     }
                 ],
             },
-            {"title": "vide", "cards": [{"entities": []}]},
+            {"title": "vide", "cards": []},
         ],
     }
     out = model.clean_dashboard(raw)
@@ -173,3 +173,55 @@ def test_any_lovelace_card_type_is_kept():
     assert page["cards"][0]["entities"] == [{"entity": "weather.maison"}]
     assert page["cards"][2]["entities"] == []
     assert page["cards"][2]["config"]["content"] == "**Salut**"
+
+
+def test_panel_card_shape_keeps_the_lovelace_config():
+    page = model.clean_page(
+        {
+            "cards": [
+                {
+                    "type": "entities",
+                    "title": "",
+                    "entities": [],
+                    "config": {
+                        "type": "entities",
+                        "entities": ["light.salon", "light.cuisine"],
+                    },
+                }
+            ]
+        }
+    )
+    card = page["cards"][0]
+    assert card["config"]["entities"] == ["light.salon", "light.cuisine"]
+    assert [row["entity"] for row in card["entities"]] == [
+        "light.salon",
+        "light.cuisine",
+    ]
+
+
+def test_unfilled_entities_placeholder_is_dropped():
+    page = model.clean_page(
+        {
+            "cards": [
+                {
+                    "type": "entities",
+                    "title": "",
+                    "entities": [],
+                    "config": {"type": "entities"},
+                }
+            ]
+        }
+    )
+    assert page is None
+
+
+def test_markdown_line_breaks_survive():
+    page = model.clean_page(
+        {"cards": [{"type": "markdown", "content": "Salut\n\n**Monde**\n"}]}
+    )
+    assert page["cards"][0]["config"]["content"] == "Salut\n\n**Monde**\n"
+
+
+def test_empty_entities_card_survives_when_it_is_a_real_lovelace_card():
+    page = model.clean_page({"cards": [{"type": "entities", "entities": []}]})
+    assert page is not None

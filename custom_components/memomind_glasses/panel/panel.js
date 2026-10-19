@@ -11,7 +11,7 @@ class MemoMindGlassesPanel extends HTMLElement {
     this._busy = false;
     this._error = "";
     this._newName = "";
-    this._entityInput = {};
+    this._filling = false;
     this.attachShadow({ mode: "open" });
   }
 
@@ -80,6 +80,8 @@ class MemoMindGlassesPanel extends HTMLElement {
     if (!result) return;
     this._selected = index;
     this._draft = JSON.parse(JSON.stringify(result.source || { pages: [] }));
+    this._autoSave();
+    this._error = "";
     this._render();
   }
 
@@ -131,99 +133,27 @@ class MemoMindGlassesPanel extends HTMLElement {
     return this._draft !== null;
   }
 
-  _entityRow(entity, path, index) {
-    const row = document.createElement("div");
-    row.className = "entity-row";
-
-    const up = document.createElement("button");
-    up.textContent = "↑";
-    up.title = "Monter";
-    up.onclick = () => this._move(path, index, -1);
-    const down = document.createElement("button");
-    down.textContent = "↓";
-    down.title = "Descendre";
-    down.onclick = () => this._move(path, index, 1);
-    const remove = document.createElement("button");
-    remove.textContent = "✕";
-    remove.title = "Retirer";
-    remove.onclick = () => this._removeEntity(path, index);
-
-    const id = document.createElement("code");
-    id.textContent = entity.entity;
-    const state = this._hass.states[entity.entity];
-    const friendly = state ? state.attributes.friendly_name || "" : "entité inconnue";
-    const info = document.createElement("span");
-    info.className = "entity-info";
-    info.textContent = friendly;
-
-    const name = document.createElement("input");
-    name.placeholder = "Nom affiché";
-    name.value = entity.name || "";
-    name.oninput = () => {
-      entity.name = name.value;
-      this._markDirty();
-    };
-
-    row.append(up, down, id, info, name, remove);
-    return row;
-  }
-
-  _move(path, index, delta) {
-    const list = this._listAt(path);
-    const target = index + delta;
-    if (!list || target < 0 || target >= list.length) return;
-    const [item] = list.splice(index, 1);
-    list.splice(target, 0, item);
-    this._markDirty();
-  }
-
-  _removeEntity(path, index) {
-    const list = this._listAt(path);
-    if (!list) return;
-    list.splice(index, 1);
-    this._markDirty();
-  }
-
-  _listAt(path) {
-    let node = this._draft;
-    for (const step of path) {
-      if (!node) return null;
-      node = step === "cards" ? node.cards : node.pages[step];
-    }
-    return node && node.entities;
+  _autoSave() {
+    if (this._selected === null || !this._draft) return;
+    if (this._finalTimer) clearTimeout(this._finalTimer);
+    if (this._fillingTimer) clearTimeout(this._fillingTimer);
+    this._filling = true;
+    this._fillingTimer = setTimeout(() => {
+      this._filling = false;
+      this._render();
+    }, 900);
+    this._finalTimer = setTimeout(() => this._save(), 1600);
   }
 
   _markDirty() {
     this._render();
-  }
-
-  _addEntity(path) {
-    const key = path.join("/");
-    const raw = this._entityInput[key] || "";
-    const entity = raw.trim();
-    if (!entity.includes(".")) {
-      this._error = "Entité invalide : utilise la forme domaine.objet (ex: light.salon)";
-      this._render();
-      return;
-    }
-    const list = this._listAt(path);
-    if (!list) return;
-    if (list.some((row) => row.entity === entity)) {
-      this._error = `${entity} est déjà dans cette carte`;
-      this._render();
-      return;
-    }
-    list.push({ entity });
-    this._entityInput[key] = "";
-    this._markDirty();
-  }
-
-  _entitiesFor(card) {
-    return (card.entities || []).map((entity) => entity.entity);
+    this._autoSave();
   }
 
   _cardConfig(card) {
-    if (card.config && typeof card.config === "object") return card.config;
+    if (card.config && typeof card.config === "object" && card.config.type) {
+      return card.config;
+    }
     const config = { type: card.type || "entities" };
     if (card.title) config.title = card.title;
     if (card.entities && card.entities.length) {
@@ -234,30 +164,44 @@ class MemoMindGlassesPanel extends HTMLElement {
     return config;
   }
 
+  async _helpers() {
+    if (this._cardHelpers !== undefined) return this._cardHelpers;
+    this._cardHelpers = null;
+    if (typeof window.loadCardHelpers !== "function") return null;
+    try {
+      const loaded = await window.loadCardHelpers();
+      if (loaded && typeof loaded.createCardElement === "function") {
+        this._cardHelpers = loaded;
+      }
+    } catch (_) {
+      this._cardHelpers = null;
+    }
+    return this._cardHelpers;
+  }
+
   _cardPreview(card, height) {
     const host = document.createElement("div");
     host.className = "preview";
     host.style.maxHeight = `${height}px`;
-    const build = () => {
-      const helpers = window.loadCardHelpers;
-      if (typeof helpers !== "function") return null;
-      return helpers()
-        .then((loaded) => {
-          if (!loaded || typeof loaded.createCardElement !== "function") return null;
-          const element = loaded.createCardElement(this._cardConfig(card));
-          element.hass = this._hass;
-          return element;
-        })
-        .catch(() => null);
-    };
-    Promise.resolve(build()).then((element) => {
-      if (!element) {
+    this._helpers().then((helpers) => {
+      if (!helpers) {
         const fallback = document.createElement("pre");
         fallback.className = "config-fallback";
         fallback.textContent = JSON.stringify(this._cardConfig(card), null, 2);
         host.append(fallback);
         return;
       }
+      let element;
+      try {
+        element = helpers.createCardElement(this._cardConfig(card));
+      } catch (error) {
+        const fallback = document.createElement("div");
+        fallback.className = "config-fallback";
+        fallback.textContent = `${this._describe(error)} : carte ${card.type}`;
+        host.append(fallback);
+        return;
+      }
+      element.hass = this._hass;
       host.append(element);
     });
     return host;
@@ -273,7 +217,11 @@ class MemoMindGlassesPanel extends HTMLElement {
   _cardNode(card, pageIndex, cardIndex) {
     const slot = document.createElement("div");
     slot.className = "card";
-    slot.title = "Une carte = un écran sur les lunettes";
+    const labelText = String(card._label || "").trim();
+    const position = `Écran ${this._screenNumber(pageIndex, cardIndex)}`;
+    slot.title = labelText
+      ? `${position} sur les lunettes : ${labelText}`
+      : `${position} sur les lunettes`;
 
     const cardHead = document.createElement("div");
     cardHead.className = "card-head";
@@ -306,104 +254,161 @@ class MemoMindGlassesPanel extends HTMLElement {
     return slot;
   }
 
-  _editCard(card) {
-    card._editing = true;
-    card._step = card.config && card.config.type ? "configure" : "pick";
-    card._pending = card.config
-      ? JSON.parse(JSON.stringify(card.config))
-      : { type: undefined };
-    this._error = "";
-    this._markDirty();
+  _screenNumber(pageIndex, cardIndex) {
+    let number = 0;
+    (this._draft.pages || []).forEach((page, index) => {
+      if (index < pageIndex) number += (page.cards || []).length;
+    });
+    return number + cardIndex + 1;
   }
 
-  _pickerNode(card) {
-    const box = document.createElement("div");
-    box.className = "picker-box";
-    const tag = customElements.get("hui-card-picker");
-    if (!tag || !window.loadCardHelpers) {
-      box.append(this._yamlNode(card));
-      return box;
+  _pageOf(card) {
+    for (const page of this._draft.pages || []) {
+      const index = (page.cards || []).indexOf(card);
+      if (index !== -1) return { page, index };
     }
-    const picker = document.createElement("hui-card-picker");
-    picker.hass = this._hass;
-    picker.lovelace = this._lovelaceConfig();
-    picker.addEventListener("config-changed", (event) => {
-      const config = event.detail && event.detail.config;
-      if (!config || !config.type) return;
-      card._pending = config;
-      card._step = "configure";
-      this._markDirty();
-    });
-    box.append(picker);
-    const cancel = document.createElement("button");
-    cancel.textContent = "Annuler";
-    cancel.onclick = () => this._cancelCardEdit(card);
-    box.append(cancel);
-    return box;
+    return { page: null, index: -1 };
   }
 
-  _configureNode(card) {
-    const box = document.createElement("div");
-    box.className = "config-box";
-    const tag = customElements.get("hui-card-element-editor");
-    if (!tag) {
-      card._yaml = JSON.stringify(card._pending || {}, null, 2);
-      box.append(this._yamlNode(card));
-      return box;
-    }
-    const editor = document.createElement("hui-card-element-editor");
-    editor.hass = this._hass;
-    editor.lovelace = this._lovelaceConfig();
-    editor.value = card._pending;
-    editor.addEventListener("config-changed", (event) => {
-      if (event.detail && event.detail.config) {
-        card._pending = event.detail.config;
-      }
-    });
-    box.append(editor);
-    const actions = document.createElement("div");
-    actions.className = "bar";
-    const back = document.createElement("button");
-    back.textContent = "← Changer de type";
-    back.onclick = () => {
-      card._step = "pick";
-      this._markDirty();
+  _newCard(config) {
+    const clean = JSON.parse(JSON.stringify(config || {}));
+    return {
+      type: clean.type || "entities",
+      title: clean.title || "",
+      entities: [],
+      config: clean,
     };
-    const save = document.createElement("button");
-    save.className = "primary";
-    save.textContent = "Ajouter la carte";
-    save.onclick = () => this._saveCardConfig(card);
-    const cancel = document.createElement("button");
-    cancel.textContent = "Annuler";
-    cancel.onclick = () => this._cancelCardEdit(card);
-    actions.append(back, save, cancel);
-    box.append(actions);
-    return box;
   }
 
-  _saveCardConfig(card) {
-    const config = JSON.parse(JSON.stringify(card._pending || {}));
-    if (!config.type) {
-      this._error = "Choisis d'abord un type de carte";
-      this._render();
+  _editCard(card, index) {
+    const { page, index: position } = this._pageOf(card);
+    if (!page) return;
+    this._openLovelaceDialog(
+      page,
+      card,
+      position === -1 ? (index === undefined ? page.cards.length : index) : position,
+    );
+  }
+
+  async _element(name) {
+    if (customElements.get(name)) return true;
+    try {
+      if (typeof window.loadCardHelpers === "function") await window.loadCardHelpers();
+    } catch (_) {
+      /* ignore */
+    }
+    if (customElements.get(name)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    return Boolean(customElements.get(name));
+  }
+
+  async _openLovelaceDialog(page, card, position) {
+    const existing = card && card.config && card.config.type ? card.config : null;
+    if (!existing) {
+      if (!(await this._openCreateDialog(page, card, position))) {
+        this._fallbackCard(page, card, position);
+      }
       return;
     }
-    card.config = config;
-    card.type = config.type;
-    card.title = config.title || "";
-    card.entities = [];
-    card._editing = false;
-    card._pending = null;
-    card._yaml = null;
-    this._error = "";
+    const readyEdit = await this._element("hui-dialog-edit-card");
+    if (readyEdit) {
+      const dialog = document.createElement("hui-dialog-edit-card");
+      dialog.hass = this._hass;
+      dialog.lovelaceConfig = this._lovelaceConfig();
+      dialog.cardConfig = JSON.parse(JSON.stringify(existing));
+      dialog.saveCardConfig = (config) => {
+        if (!config || !config.type) return;
+        this._applyDialogConfig(page, card, config, position);
+      };
+      document.body.append(dialog);
+      dialog.addEventListener("dialog-closed", () => dialog.remove(), { once: true });
+      if (typeof dialog.show === "function") dialog.show();
+      return;
+    }
+    if (await this._openCreateDialog(page, card, position)) return;
+    this._fallbackCard(page, card, position);
+  }
+
+  async _openCreateDialog(page, card, position) {
+    if (!(await this._element("hui-dialog-create-card"))) return false;
+    const dialog = document.createElement("hui-dialog-create-card");
+    dialog.hass = this._hass;
+    dialog.lovelaceConfig = this._lovelaceConfig();
+    dialog.saveConfig = (config) => {
+      if (!config || !config.type) return;
+      this._applyDialogConfig(page, card, config, position);
+    };
+    document.body.append(dialog);
+    dialog.addEventListener("dialog-closed", () => dialog.remove(), { once: true });
+    const path = page.cards.indexOf(card);
+    dialog.showDialog({ path: path === -1 ? [] : [path] });
+    return true;
+  }
+
+  _fallbackCard(page, card, position) {
+    const cards = page.cards || [];
+    const index = cards.indexOf(card);
+    if (index !== -1) cards.splice(index, 1);
+    this._error =
+      "Le sélecteur de cartes de Home Assistant n'est pas disponible ici. " +
+      "Ouvre l'onglet Carte d'un dashboard Lovelace, ajoute ta carte, colle son YAML ci-dessous.";
+    page._fallback = {
+      at: index === -1 ? (position === undefined ? cards.length : position) : index,
+      text: "",
+    };
     this._markDirty();
   }
 
-  _cancelCardEdit(card) {
-    card._editing = false;
-    card._pending = null;
-    card._yaml = null;
-    this._render();
+  _fallbackNode(page) {
+    const box = document.createElement("div");
+    box.className = "yaml";
+    const area = document.createElement("textarea");
+    area.spellcheck = false;
+    area.rows = 10;
+    area.placeholder =
+      "type: entities\nentities:\n  - light.salon\n  - sensor.temperature";
+    area.value = page._fallback.text || "";
+    area.oninput = () => {
+      page._fallback.text = area.value;
+    };
+    const apply = document.createElement("button");
+    apply.className = "primary";
+    apply.textContent = "Ajouter la carte";
+    apply.onclick = () => {
+      const parsed = parseCardYaml(area.value);
+      if (!parsed) {
+        this._error = "YAML de carte invalide.";
+      } else {
+        page.cards = page.cards || [];
+        page.cards.splice(
+          Math.min(page._fallback.at, page.cards.length),
+          0,
+          this._newCard(parsed),
+        );
+        page._fallback = null;
+        this._error = "";
+      }
+      this._markDirty();
+    };
+    const cancel = document.createElement("button");
+    cancel.textContent = "Annuler";
+    cancel.onclick = () => {
+      page._fallback = null;
+      this._error = "";
+      this._markDirty();
+    };
+    box.append(area, apply, cancel);
+    return box;
+  }
+
+  _applyDialogConfig(page, card, config, position) {
+    page.cards = page.cards || [];
+    const index = page.cards.indexOf(card);
+    const at = index === -1 ? (position === undefined ? page.cards.length : position) : index;
+    if (index !== -1) page.cards.splice(index, 1);
+    page.cards.splice(at, 0, this._newCard(config));
+    this._error = "";
+    this._markDirty();
   }
 
   _moveCard(path, index, delta) {
@@ -415,67 +420,6 @@ class MemoMindGlassesPanel extends HTMLElement {
     const [item] = cards.splice(index, 1);
     cards.splice(target, 0, item);
     this._markDirty();
-  }
-
-  _editCardYaml(card) {
-    const config = this._cardConfig(card);
-    card._editing = true;
-    card._yaml = JSON.stringify(config, null, 2);
-    this._markDirty();
-  }
-
-  _applyCardYaml(card) {
-    let parsed;
-    try {
-      parsed = JSON.parse(card._yaml || "{}");
-    } catch (error) {
-      this._error = `JSON invalide : ${error.message}`;
-      this._render();
-      return;
-    }
-    if (!parsed || typeof parsed !== "object" || !parsed.type) {
-      this._error = "La carte doit contenir au moins \"type\"";
-      this._render();
-      return;
-    }
-    card.config = parsed;
-    card.type = parsed.type;
-    card.title = parsed.title || "";
-    if (Array.isArray(parsed.entities)) {
-      card.entities = parsed.entities
-        .map((row) => (typeof row === "string" ? row : row && row.entity))
-        .filter((id) => typeof id === "string" && id.includes("."))
-        .map((id) => ({ entity: id }));
-    }
-    card._editing = false;
-    card._yaml = null;
-    this._error = "";
-    this._markDirty();
-  }
-
-  _yamlNode(card) {
-    const box = document.createElement("div");
-    box.className = "yaml";
-    const area = document.createElement("textarea");
-    area.spellcheck = false;
-    area.value = card._yaml || "";
-    area.rows = 12;
-    area.oninput = () => {
-      card._yaml = area.value;
-    };
-    const apply = document.createElement("button");
-    apply.className = "primary";
-    apply.textContent = "Appliquer";
-    apply.onclick = () => this._applyCardYaml(card);
-    const cancel = document.createElement("button");
-    cancel.textContent = "Annuler";
-    cancel.onclick = () => {
-      card._editing = false;
-      card._yaml = null;
-      this._markDirty();
-    };
-    box.append(area, apply, cancel);
-    return box;
   }
 
   _pageNode(page, pageIndex) {
@@ -508,24 +452,23 @@ class MemoMindGlassesPanel extends HTMLElement {
     (page.cards || []).forEach((card, cardIndex) => {
       const wrapper = document.createElement("div");
       wrapper.className = "slot";
-      if (card._editing) {
-        wrapper.classList.add("editing");
-        wrapper.append(
-          card._step === "pick" ? this._pickerNode(card) : this._configureNode(card),
-        );
-      } else {
-        wrapper.append(this._cardNode(card, pageIndex, cardIndex));
-      }
+      wrapper.append(this._cardNode(card, pageIndex, cardIndex));
       strip.append(wrapper);
     });
+    if (page._fallback) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "slot editing";
+      wrapper.append(this._fallbackNode(page));
+      strip.append(wrapper);
+    }
     const addCard = document.createElement("button");
     addCard.className = "ghost add-card";
     addCard.textContent = "+ Carte";
     addCard.onclick = () => {
       page.cards = page.cards || [];
+      page._fallback = null;
       const card = { type: "", title: "", entities: [], config: null };
-      page.cards.push(card);
-      this._editCard(card);
+      this._editCard(card, page.cards.length);
     };
     strip.append(addCard);
     box.append(strip);
@@ -585,8 +528,7 @@ class MemoMindGlassesPanel extends HTMLElement {
       .yaml textarea { width:100%; font-family:monospace; font-size:.85rem; padding:8px; border-radius:6px; border:1px solid var(--divider-color,#ccc); background:var(--card-background-color,#fff); color:inherit; }
       .config-fallback { font-size:.75rem; white-space:pre-wrap; margin:0; }
       .slot.editing { width:420px; }
-      .picker-box, .config-box { display:flex; flex-direction:column; gap:10px; max-height:520px; overflow-y:auto; }
-      .picker-box hui-card-picker { display:block; }
+      .card-head .card-type { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       .hint { color:var(--secondary-text-color,#666); font-size:.9rem; }
       @media (max-width:700px){ .layout{grid-template-columns:1fr;} .entity-row{grid-template-columns:auto auto 1fr auto;} .entity-info{display:none;} }
     `;
@@ -702,3 +644,130 @@ class MemoMindGlassesPanel extends HTMLElement {
 }
 
 customElements.define("memomind-glasses-panel", MemoMindGlassesPanel);
+
+function parseCardYaml(text) {
+  const lines = String(text || "")
+    .split("\n")
+    .map((line, number) => ({ line: line.replace(/\r$/, ""), number }))
+    .filter((entry) => entry.line.trim() && !entry.line.trim().startsWith("#"));
+  if (!lines.length) return null;
+
+  let position = 0;
+  const indentOf = (entry) => entry.line.length - entry.line.trimStart().length;
+
+  const nextSignificant = () => lines[position + 1];
+  const opensList = () => {
+    const next = nextSignificant();
+    return Boolean(next) && next.line.trim().startsWith("- ");
+  };
+
+  const parseBlock = (indent) => {
+    const first = lines[position];
+    const isList = first.line.trim().startsWith("- ");
+    return isList ? parseList(indent) : parseMap(indent);
+  };
+
+  const parseMap = (indent) => {
+    const out = {};
+    while (position < lines.length) {
+      const entry = lines[position];
+      if (indentOf(entry) < indent) break;
+      if (indentOf(entry) > indent) throw new Error(`indentation ligne ${entry.number + 1}`);
+      const body = entry.line.trim();
+      if (body.startsWith("- ")) break;
+      const separator = body.indexOf(":");
+      if (separator <= 0) throw new Error(`clé attendue ligne ${entry.number + 1}`);
+      const key = body.slice(0, separator).trim().replace(/^["']|["']$/g, "");
+      const rest = body.slice(separator + 1).trim();
+      position += 1;
+      if (rest !== "") {
+        out[key] = scalar(rest);
+      } else {
+        out[key] = parseChild(indent);
+      }
+    }
+    return out;
+  };
+
+  const parseChild = (indent) => {
+    if (position >= lines.length) return {};
+    if (indentOf(lines[position]) > indent) {
+      return parseBlock(indentOf(lines[position]));
+    }
+    if (opensList()) {
+      const next = lines[position];
+      if (next && indentOf(next) > indent) return parseList(indentOf(next));
+      return parseList(indent + 2);
+    }
+    return {};
+  };
+
+  const parseList = (indent) => {
+    const out = [];
+    while (position < lines.length) {
+      const entry = lines[position];
+      if (indentOf(entry) < indent) break;
+      if (indentOf(entry) > indent) throw new Error(`indentation ligne ${entry.number + 1}`);
+      const body = entry.line.trim();
+      if (!body.startsWith("- ")) break;
+      const rest = body.slice(2).trim();
+      const separator = rest.indexOf(":");
+      if (separator > 0 && !/^["'[{]/.test(rest)) {
+        const key = rest.slice(0, separator).trim();
+        const value = rest.slice(separator + 1).trim();
+        const item = {};
+        if (value !== "") {
+          item[key] = scalar(value);
+          position += 1;
+        } else {
+          position += 1;
+          item[key] = parseChild(indent + 2);
+        }
+        const next = lines[position];
+        if (next && !next.line.trim().startsWith("- ")) {
+          if (indentOf(next) > indent) {
+            Object.assign(item, parseMap(indentOf(next)));
+          } else {
+            Object.assign(item, parseMap(indent + 2));
+          }
+        }
+        out.push(item);
+      } else {
+        position += 1;
+        out.push(scalar(rest));
+      }
+    }
+    return out;
+  };
+
+  try {
+    const parsed = parseBlock(indentOf(lines[0]));
+    return parsed && typeof parsed === "object" && parsed.type ? parsed : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function scalar(value) {
+  const text = String(value);
+  if (text === "true") return true;
+  if (text === "false") return false;
+  if (text === "null" || text === "~") return null;
+  if (/^-?\d+(\.\d+)?$/.test(text)) return Number(text);
+  if (text.startsWith("[") || text.startsWith("{")) {
+    try {
+      return JSON.parse(text.replace(/'/g, '"'));
+    } catch (_) {
+      return text;
+    }
+  }
+  if (text.startsWith("'") && text.endsWith("'")) return text.slice(1, -1);
+  if (text.startsWith('"') && text.endsWith('"')) {
+    try {
+      return JSON.parse(text);
+    } catch (_) {
+      return text.slice(1, -1);
+    }
+  }
+  return text;
+}

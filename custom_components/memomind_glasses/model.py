@@ -10,7 +10,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from .const import MAX_DASHBOARDS, MAX_LABEL, MAX_PAGES, MAX_ROWS, MAX_TITLE
+from .const import (
+    MAX_CONFIG_TEXT,
+    MAX_DASHBOARDS,
+    MAX_LABEL,
+    MAX_PAGES,
+    MAX_ROWS,
+    MAX_TITLE,
+)
 
 class ModelError(ValueError):
     """Raised when a payload cannot be turned into a valid dashboard."""
@@ -58,13 +65,17 @@ def _clean_entity(value: Any) -> dict[str, Any] | None:
 
 
 def _clean_config(value: Any, depth: int = 0) -> Any:
-    """Keeps a Lovelace card config JSON-safe and bounded."""
+    """Keeps a Lovelace card config JSON-safe and bounded.
+
+    Markdown-ish fields keep their line breaks: squashing them would destroy
+    the content card the user typed in Lovelace.
+    """
 
     if depth > 8:
         return None
     if isinstance(value, dict):
         out: dict[str, Any] = {}
-        for key, item in list(value.items())[:48]:
+        for key, item in list(value.items())[:64]:
             key = _text(key, 48)
             if not key:
                 continue
@@ -82,7 +93,10 @@ def _clean_config(value: Any, depth: int = 0) -> Any:
         return value
     if value is None:
         return None
-    return _text(value, 240)
+    text = str(value).replace("\r\n", "\n").replace("\r", "\n")
+    if isinstance(value, str) and "\n" in text:
+        return text[:MAX_CONFIG_TEXT]
+    return _text(value, 1024)
 
 
 def _entity_ids_from_config(value: Any, found: list[str], depth: int = 0) -> None:
@@ -116,13 +130,22 @@ def _entity_ids_from_config(value: Any, found: list[str], depth: int = 0) -> Non
             _entity_ids_from_config(raw, found, depth + 1)
 
 
+def _config_of(value: dict[str, Any]) -> dict[str, Any]:
+    """Returns the Lovelace config of a card, ignoring our own bookkeeping."""
+
+    raw = value.get("config")
+    if isinstance(raw, dict) and raw.get("type"):
+        return raw
+    return value
+
+
 def _clean_card(value: Any) -> dict[str, Any] | None:
     """Normalises one card, keeping its Lovelace config for the live preview."""
 
     if not isinstance(value, dict):
         return None
-    card_type = _text(value.get("type"), 48) or "entities"
-    config = _clean_config(value) or {}
+    config = _config_of(value)
+    card_type = _text(value.get("type"), 48) or _text(config.get("type"), 48) or "entities"
     config.pop("config", None)
     config["type"] = card_type
     entities = []
@@ -132,7 +155,7 @@ def _clean_card(value: Any) -> dict[str, Any] | None:
             entities.append(entry)
     if not entities:
         ids: list[str] = []
-        _entity_ids_from_config(value, ids)
+        _entity_ids_from_config(value.get("config") or value, ids)
         entities = [{"entity": entity_id} for entity_id in ids]
     if len(entities) > MAX_ROWS:
         raise ModelError(f"a card holds at most {MAX_ROWS} rows")
@@ -142,6 +165,20 @@ def _clean_card(value: Any) -> dict[str, Any] | None:
         "entities": entities,
         "config": config,
     }
+
+
+def _is_stray_entities_card(card: dict[str, Any]) -> bool:
+    """True for an entities card the user never filled with a row.
+
+    The panel keeps a placeholder card while the picker is open; a real
+    Lovelace card always brings its own config (title, entities, ...).
+    """
+
+    if card["type"] != "entities" or card["entities"]:
+        return False
+    config = card.get("config") or {}
+    meaningful = {key for key in config if key != "type"}
+    return not meaningful
 
 
 def clean_page(value: Any) -> dict[str, Any] | None:
@@ -154,9 +191,7 @@ def clean_page(value: Any) -> dict[str, Any] | None:
         card = _clean_card(raw)
         if card is not None:
             cards.append(card)
-    cards = [
-        card for card in cards if card["entities"] or card["type"] != "entities"
-    ]
+    cards = [card for card in cards if not _is_stray_entities_card(card)]
     if not cards:
         return None
     total = sum(len(card["entities"]) for card in cards)
