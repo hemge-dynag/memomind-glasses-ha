@@ -181,8 +181,16 @@ def _is_stray_entities_card(card: dict[str, Any]) -> bool:
     return not meaningful
 
 
-def clean_page(value: Any) -> dict[str, Any] | None:
-    """Normalises one page. Pages without any usable row are dropped."""
+def clean_page(
+    value: Any, allow_empty: bool = False, drop_stray: bool = True
+) -> dict[str, Any] | None:
+    """Normalises one page. Pages without any usable row are dropped.
+
+    ``allow_empty`` keeps a page that only carries a title, so renaming a page
+    before adding its first card is not silently lost on save. ``drop_stray``
+    is off for a whole dashboard save: there the placeholder card the panel
+    shows while its picker is open used to make the title unrecoverable.
+    """
 
     if not isinstance(value, dict):
         return None
@@ -191,8 +199,9 @@ def clean_page(value: Any) -> dict[str, Any] | None:
         card = _clean_card(raw)
         if card is not None:
             cards.append(card)
-    cards = [card for card in cards if not _is_stray_entities_card(card)]
-    if not cards:
+    if drop_stray:
+        cards = [card for card in cards if not _is_stray_entities_card(card)]
+    if not cards and not allow_empty:
         return None
     total = sum(len(card["entities"]) for card in cards)
     if total > MAX_ROWS:
@@ -216,7 +225,7 @@ def clean_dashboard(
     if raw_pages is None and value.get("cards") is not None:
         raw_pages = [{"title": "", "cards": value.get("cards")}]
     for raw in raw_pages or []:
-        page = clean_page(raw)
+        page = clean_page(raw, allow_empty=allow_empty, drop_stray=not allow_empty)
         if page is not None:
             pages.append(page)
     pages = pages[:MAX_PAGES]

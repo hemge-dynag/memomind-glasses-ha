@@ -225,3 +225,28 @@ def test_markdown_line_breaks_survive():
 def test_empty_entities_card_survives_when_it_is_a_real_lovelace_card():
     page = model.clean_page({"cards": [{"type": "entities", "entities": []}]})
     assert page is not None
+
+
+def test_a_page_with_only_a_title_survives_a_dashboard_save():
+    dashboard = model.clean_dashboard(
+        {"name": "Lunettes", "pages": [{"title": "Salon", "cards": []}]},
+        allow_empty=True,
+    )
+    assert dashboard["pages"] == [{"title": "Salon", "cards": []}]
+
+
+def test_the_unfilled_placeholder_does_not_block_a_title_save():
+    dashboard = model.clean_dashboard(
+        {
+            "name": "Lunettes",
+            "pages": [
+                {
+                    "title": "Cuisine",
+                    "cards": [{"type": "entities", "entities": [], "config": {"type": "entities"}}],
+                }
+            ],
+        },
+        allow_empty=True,
+    )
+    assert dashboard["pages"][0]["title"] == "Cuisine"
+    assert model.clean_page({"title": "Cuisine", "cards": []}) is None

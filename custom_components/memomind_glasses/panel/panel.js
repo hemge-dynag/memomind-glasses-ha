@@ -326,9 +326,16 @@ class MemoMindGlassesPanel extends HTMLElement {
     return { page: null, index: -1 };
   }
 
-  _newCard(config) {
+  _newCard(config, previous) {
     const clean = JSON.parse(JSON.stringify(config || {}));
-    const label = String(config && config.title ? config.title : "").trim();
+    if (previous) {
+      const old = previous.config && previous.config.type ? previous.config : {};
+      Object.keys(old).forEach((key) => {
+        if (!(key in clean)) clean[key] = old[key];
+      });
+      if (!clean.title && previous.title) clean.title = previous.title;
+    }
+    const label = String(clean.title ? clean.title : "").trim();
     return {
       type: clean.type || "entities",
       title: "",
@@ -348,17 +355,22 @@ class MemoMindGlassesPanel extends HTMLElement {
     );
   }
 
-  async _openLovelaceDialog(page, card, position) {
-    const existing = card && card.config && card.config.type ? card.config : null;
-    if (!existing) {
-      this._openOwnDialog(page, position);
-      return;
-    }
-    const editDialog = await this._showLovelaceDialog(page, existing, position);
-    if (!editDialog) this._fallbackCard(page, card, position);
+  _openLovelaceDialog(page, config, position) {
+    const existing =
+      config && config.config && config.config.type ? config.config : null;
+    this._openOwnDialog(page, position, existing);
+    this._offerLovelacePicker(page, position, existing);
+  }
+
+  async _offerLovelacePicker(page, position, existing) {
+    // Home Assistant's own card dialog is a best-effort upgrade: the gallery
+    // is already on screen, so a slow or missing chunk never blocks the user.
+    const dialog = await this._showLovelaceDialog(page, existing || {}, position);
+    if (dialog && this._dialogEl) this._closeDialog();
   }
 
   async _showLovelaceDialog(page, config, position) {
+    if (config.type === undefined) return false;
     const names = ["hui-dialog-edit-card", "hui-dialog-create-card"];
     for (const name of names) {
       if (!(await this._loadElement(name))) continue;
@@ -398,10 +410,29 @@ class MemoMindGlassesPanel extends HTMLElement {
     this._lovelaceDialog = null;
   }
 
-  _openOwnDialog(page, position) {
+  _openOwnDialog(page, position, config) {
     if (this._dialogEl) this._dialogEl.remove();
     this._dialogEl = null;
     this._dialog = { page, position, type: "entities", steps: [], index: 0 };
+    this._dialogError = "";
+    this._drawDialog();
+    if (config && config.type) this._prefillDialog(config);
+  }
+
+  _prefillDialog(config) {
+    const state = this._dialog;
+    const entry = CARD_SUGGESTIONS.find((item) => item.type === config.type);
+    if (!entry || !entry.template) return;
+    state.type = entry.type;
+    state.steps = [
+      entry.template.map((field, index) => ({
+        ...field,
+        index,
+        value: config[field.key] ?? field.value ?? field.default ?? "",
+      })),
+    ];
+    state.index = 0;
+    state.previous = config;
     this._dialogError = "";
     this._drawDialog();
   }
@@ -419,7 +450,9 @@ class MemoMindGlassesPanel extends HTMLElement {
     const head = document.createElement("div");
     head.className = "dialog-head";
     const title = document.createElement("h2");
-    title.textContent = "Ajouter une carte";
+    title.textContent = state.position < (page.cards || []).length
+      ? "Modifier la carte"
+      : "Ajouter une carte";
     const close = document.createElement("button");
     close.textContent = "✕";
     close.title = "Fermer";
@@ -523,7 +556,8 @@ class MemoMindGlassesPanel extends HTMLElement {
       const toggle = document.createElement("button");
       toggle.textContent = "Coller un YAML";
       toggle.onclick = () => {
-        state.steps = [[{ key: "yaml", name: "YAML de la carte", text: true, index: 0, value: "" }]];
+        const current = state.previous ? JSON.stringify(state.previous, null, 2) : "";
+        state.steps = [[{ key: "yaml", name: "YAML de la carte", text: true, index: 0, value: current }]];
         state.yaml = true;
         this._dialogError = "";
         this._drawDialog();
@@ -544,21 +578,13 @@ class MemoMindGlassesPanel extends HTMLElement {
     this._dialogEl = backdrop;
   }
 
-  async _openLovelaceCardDialog(page, position) {
-    this._closeDialog();
-    const opened = await this._showLovelaceDialog(
-      page,
-      { type: "entities", entities: [] },
-      position,
-    );
-    if (!opened) {
-      this._openOwnDialog(page, position);
-      this._dialog.blank = true;
-      this._dialog.steps = [];
-      this._dialogError =
-        "Le sélecteur de cartes de Home Assistant n'est pas chargé : colle le YAML de ta carte ci-dessous.";
-      this._drawDialog();
-    }
+  _openLovelaceCardDialog(page, position) {
+    this._openOwnDialog(page, position);
+    this._dialog.blank = true;
+    this._dialogError =
+      "Pas de sélecteur graphique disponible ici : colle le YAML de ta carte, ou prends un type de la galerie.";
+    this._drawDialog();
+    this._offerLovelacePicker(page, position);
   }
 
   _entityPicker(initial) {
@@ -730,8 +756,9 @@ class MemoMindGlassesPanel extends HTMLElement {
     page.cards = page.cards || [];
     const index = card ? page.cards.indexOf(card) : -1;
     const at = index === -1 ? (position === undefined ? page.cards.length : position) : index;
+    const previous = index !== -1 ? page.cards[index] : page.cards[position];
     if (index !== -1) page.cards.splice(index, 1);
-    page.cards.splice(at, 0, this._newCard(config));
+    page.cards.splice(at, 0, this._newCard(config, previous));
     this._error = "";
     this._markDirty();
   }
@@ -793,8 +820,7 @@ class MemoMindGlassesPanel extends HTMLElement {
     addCard.onclick = () => {
       page.cards = page.cards || [];
       page._fallback = null;
-      const card = { type: "", title: "", entities: [], config: null };
-      this._openLovelaceDialog(page, card, page.cards.length);
+      this._openLovelaceDialog(page, null, page.cards.length);
     };
     strip.append(addCard);
     box.append(strip);
@@ -1081,7 +1107,11 @@ CARD_SUGGESTIONS.push(
 );
 
 function buildSuggestionConfig(state) {
-  const config = { type: state.type };
+  const config = {};
+  if (state.previous && state.previous.type === state.type) {
+    Object.assign(config, state.previous);
+  }
+  config.type = state.type;
   state.steps.forEach((step) => {
     step.forEach((field) => {
       if (field.key === "entities") {
