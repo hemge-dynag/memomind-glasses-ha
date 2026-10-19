@@ -12,17 +12,29 @@ class MemoMindGlassesPanel extends HTMLElement {
     this._error = "";
     this._newName = "";
     this._filling = false;
+    this._rendering = false;
+    this._pendingRender = false;
     this.attachShadow({ mode: "open" });
   }
 
   set hass(hass) {
     const first = !this._hass;
+    const changed = Boolean(this._hass) && this._hass.states !== hass.states;
     this._hass = hass;
     if (first) this._reload();
+    if (changed) this._refreshPreviews();
   }
 
   connectedCallback() {
     this._render();
+  }
+
+  _refreshPreviews() {
+    this._previews = (this._previews || []).filter((element) => {
+      if (!element.isConnected || !this.shadowRoot.contains(element)) return false;
+      element.hass = this._hass;
+      return true;
+    });
   }
 
   _describe(error) {
@@ -119,14 +131,40 @@ class MemoMindGlassesPanel extends HTMLElement {
   }
 
   async _save() {
-    if (this._selected === null || !this._draft) return;
-    const result = await this._call("PUT", `/${this._selected}`, this._draft);
-    if (!result) return;
-    this._draft = JSON.parse(
-      JSON.stringify(result.dashboard || result.source || this._draft),
-    );
-    this._saved = true;
-    await this._reload();
+    if (this._selected === null || !this._draft || this._saving) return;
+    this._saving = true;
+    this._busy = true;
+    try {
+      if (!this._hass) throw new Error("Home Assistant non connecté");
+      const result = await this._hass.callApi(
+        "PUT",
+        `${API_PATH}/${this._selected}`,
+        this._draft,
+      );
+      this._error = "";
+      this._saved = Boolean(result);
+    } catch (error) {
+      const status = error && error.status ? ` (${error.status})` : "";
+      this._error = this._describe(error) + status;
+    } finally {
+      this._saving = false;
+      this._busy = false;
+      this._filling = false;
+      this._updateStatus();
+    }
+  }
+
+  _updateStatus() {
+    const node = this.shadowRoot && this.shadowRoot.querySelector(".save-state");
+    if (node) {
+      node.textContent = this._filling
+        ? "Enregistrement…"
+        : this._error
+          ? "Non enregistré"
+          : this._saved
+            ? "Enregistré"
+            : "";
+    }
   }
 
   _dirty() {
@@ -138,15 +176,22 @@ class MemoMindGlassesPanel extends HTMLElement {
     if (this._finalTimer) clearTimeout(this._finalTimer);
     if (this._fillingTimer) clearTimeout(this._fillingTimer);
     this._filling = true;
+    this._updateStatus();
+    if (this._fillingTimer) clearTimeout(this._fillingTimer);
     this._fillingTimer = setTimeout(() => {
       this._filling = false;
-      this._render();
+      this._updateStatus();
     }, 900);
+    if (this._finalTimer) clearTimeout(this._finalTimer);
     this._finalTimer = setTimeout(() => this._save(), 1600);
   }
 
   _markDirty() {
     this._render();
+    this._autoSave();
+  }
+
+  _changed() {
     this._autoSave();
   }
 
@@ -202,6 +247,8 @@ class MemoMindGlassesPanel extends HTMLElement {
         return;
       }
       element.hass = this._hass;
+      this._previews = this._previews || [];
+      this._previews.push(element);
       host.append(element);
     });
     return host;
@@ -247,6 +294,7 @@ class MemoMindGlassesPanel extends HTMLElement {
       (this._draft.pages[pageIndex].cards || []).splice(cardIndex, 1);
       this._markDirty();
     };
+    label.textContent = [card.type || "entities", card.title].filter(Boolean).join(" · ");
     cardHead.append(label, up, down, edit, remove);
     slot.append(cardHead);
 
@@ -272,11 +320,13 @@ class MemoMindGlassesPanel extends HTMLElement {
 
   _newCard(config) {
     const clean = JSON.parse(JSON.stringify(config || {}));
+    const label = String(config && config.title ? config.title : "").trim();
     return {
       type: clean.type || "entities",
-      title: clean.title || "",
+      title: "",
       entities: [],
       config: clean,
+      _label: label,
     };
   }
 
@@ -431,9 +481,10 @@ class MemoMindGlassesPanel extends HTMLElement {
     title.className = "page-title";
     title.placeholder = "Titre de la page";
     title.value = page.title || "";
+    title.dataset.field = "page-title";
     title.oninput = () => {
       page.title = title.value;
-      this._markDirty();
+      this._changed();
     };
     const up = document.createElement("button");
     up.textContent = "↑";
@@ -468,7 +519,7 @@ class MemoMindGlassesPanel extends HTMLElement {
       page.cards = page.cards || [];
       page._fallback = null;
       const card = { type: "", title: "", entities: [], config: null };
-      this._editCard(card, page.cards.length);
+      this._openLovelaceDialog(page, card, page.cards.length);
     };
     strip.append(addCard);
     box.append(strip);
@@ -490,8 +541,30 @@ class MemoMindGlassesPanel extends HTMLElement {
   }
 
   _render() {
+    if (this._rendering) {
+      this._pendingRender = true;
+      return;
+    }
     if (!this.shadowRoot) return;
+    this._rendering = true;
+    try {
+      this._draw();
+    } finally {
+      this._rendering = false;
+      if (this._pendingRender) {
+        this._pendingRender = false;
+        this._render();
+      }
+    }
+  }
+
+  _draw() {
     const root = this.shadowRoot;
+    const active = root.activeElement;
+    const caret =
+      active && typeof active.selectionStart === "number"
+        ? { key: active.dataset.field, start: active.selectionStart, end: active.selectionEnd }
+        : null;
     root.innerHTML = "";
     const style = document.createElement("style");
     style.textContent = `
@@ -530,6 +603,7 @@ class MemoMindGlassesPanel extends HTMLElement {
       .slot.editing { width:420px; }
       .card-head .card-type { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       .hint { color:var(--secondary-text-color,#666); font-size:.9rem; }
+      .save-state { align-self:center; font-size:.85rem; color:var(--secondary-text-color,#666); }
       @media (max-width:700px){ .layout{grid-template-columns:1fr;} .entity-row{grid-template-columns:auto auto 1fr auto;} .entity-info{display:none;} }
     `;
     root.append(style);
@@ -605,8 +679,10 @@ class MemoMindGlassesPanel extends HTMLElement {
       const name = document.createElement("input");
       name.value = this._draft.name || "";
       name.placeholder = "Nom du dashboard";
+      name.dataset.field = "dashboard-name";
       name.oninput = () => {
         this._draft.name = name.value;
+        this._changed();
       };
       const remove = document.createElement("button");
       const armed = this._confirmDelete === this._selected;
@@ -630,6 +706,12 @@ class MemoMindGlassesPanel extends HTMLElement {
         this._markDirty();
       };
       pages.append(addPage);
+      if (!(this._draft.pages || []).length) {
+        const hint = document.createElement("p");
+        hint.className = "hint";
+        hint.textContent = "Aucune page. Clique sur « + Page », puis sur « + Carte » pour ouvrir le sélecteur de cartes de Home Assistant.";
+        pages.append(hint);
+      }
       detail.append(pages);
     } else {
       const hint = document.createElement("p");
@@ -640,6 +722,19 @@ class MemoMindGlassesPanel extends HTMLElement {
     }
     layout.append(detail);
     root.append(layout);
+
+    if (caret) {
+      const field = root.querySelector(`[data-field="${caret.key}"]`);
+      if (field) {
+        field.focus();
+        try {
+          field.setSelectionRange(caret.start, caret.end);
+        } catch (_) {
+          /* not a text field */
+        }
+      }
+    }
+    this._updateStatus();
   }
 }
 
