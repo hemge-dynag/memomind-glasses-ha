@@ -139,6 +139,21 @@ def _config_of(value: dict[str, Any]) -> dict[str, Any]:
     return value
 
 
+COMPOSITE_CARD_TYPES = {
+    "vertical-stack",
+    "horizontal-stack",
+    "stack",
+    "grid",
+    "custom:auto-entities",
+}
+
+
+def _composite_card(card_type: str) -> bool:
+    """True for a card the phone renders from its children."""
+
+    return card_type in COMPOSITE_CARD_TYPES or card_type.startswith("custom:")
+
+
 def _clean_card(value: Any) -> dict[str, Any] | None:
     """Normalises one card, keeping its Lovelace config for the live preview."""
 
@@ -153,10 +168,18 @@ def _clean_card(value: Any) -> dict[str, Any] | None:
         entry = _clean_entity(raw)
         if entry is not None:
             entities.append(entry)
+    ids: list[str] = []
+    _entity_ids_from_config(value.get("config") or value, ids)
     if not entities:
-        ids: list[str] = []
-        _entity_ids_from_config(value.get("config") or value, ids)
         entities = [{"entity": entity_id} for entity_id in ids]
+    elif _composite_card(card_type):
+        # A composite card has no rows of its own: the phone draws its children,
+        # so it needs every entity they reference to look up their states.
+        known = {entry["entity"] for entry in entities}
+        for entity_id in ids:
+            if entity_id not in known:
+                known.add(entity_id)
+                entities.append({"entity": entity_id})
     if len(entities) > MAX_ROWS:
         raise ModelError(f"a card holds at most {MAX_ROWS} rows")
     return {

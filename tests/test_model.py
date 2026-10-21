@@ -250,3 +250,35 @@ def test_the_unfilled_placeholder_does_not_block_a_title_save():
     )
     assert dashboard["pages"][0]["title"] == "Cuisine"
     assert model.clean_page({"title": "Cuisine", "cards": []}) is None
+
+
+def test_composite_card_carries_its_children_entities():
+    raw = {
+        "name": "Prises",
+        "pages": [
+            {
+                "title": "Prises",
+                "cards": [
+                    {
+                        "type": "grid",
+                        "config": {
+                            "type": "grid",
+                            "columns": 3,
+                            "cards": [
+                                {
+                                    "type": "custom:bubble-card",
+                                    "entity": "switch.pc",
+                                    "name": "PC",
+                                },
+                                {"type": "sensor", "entity": "sensor.tv"},
+                            ],
+                        },
+                        "entities": [],
+                    }
+                ],
+            }
+        ],
+    }
+    out = model.clean_dashboard(raw)
+    entities = out["pages"][0]["cards"][0]["entities"]
+    assert [e["entity"] for e in entities] == ["sensor.tv", "switch.pc"]
