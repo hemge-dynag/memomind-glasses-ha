@@ -123,9 +123,42 @@ class MemoMindGlassesPanel extends HTMLElement {
     if (!result) return;
     this._selected = index;
     this._draft = JSON.parse(JSON.stringify(result.source || { pages: [] }));
+    this._flushPending();
     this._autoSave();
     this._error = "";
     this._render();
+  }
+
+  _pageIndexOf(page) {
+    const pages = (this._draft && this._draft.pages) || [];
+    return pages.indexOf(page);
+  }
+
+  // Applies a card config saved by Home Assistant's own dialog. That callback
+  // can arrive after a save reload replaced the draft, so the config is
+  // replayed on the reloaded page and the card at the same position is
+  // replaced in place — never appended as a second copy.
+  _flushPending() {
+    const pending = this._pending || [];
+    this._pending = [];
+    pending.forEach((item) => {
+      const pages = (this._draft && this._draft.pages) || [];
+      const page = pages[item.pageIndex];
+      if (!page) return;
+      /* The picker leaves an empty placeholder card at the target slot while
+       * its dialog is open. Replacing that slot directly is what keeps an edit
+       * from saving next to itself as a second card. */
+      page.cards = page.cards || [];
+      if (item.position >= 0 && item.position < page.cards.length) {
+        const slot = page.cards[item.position];
+        if (slot && !_isPlaceholder(slot)) {
+          this._applyDialogConfig(page, slot, item.config, item.position);
+          return;
+        }
+        page.cards.splice(item.position, 1);
+      }
+      this._applyDialogConfig(page, null, item.config, item.position);
+    });
   }
 
   async _create() {
@@ -376,12 +409,25 @@ class MemoMindGlassesPanel extends HTMLElement {
     this._openOwnDialog(page, position, existing);
     const token = this._dialog;
     const at = position === undefined ? page.cards.length : position;
+    // The native dialog often calls back *after* our save reload rewrote the
+    // draft: remember the config and apply it whenever that happens, so the
+    // edit lands on the card it came from instead of adding a second one.
+    const pageIndex = this._pageIndexOf(page);
+    const queue = (config) => {
+      if (!config || !config.type) return false;
+      // A save reload already replaced `page` with its copy: keep the position
+      // we were opened at so the replay still lands on the right page.
+      this._pending = this._pending || [];
+      this._pending.push({ pageIndex, position: at, config });
+      return true;
+    };
     if (existing) {
       this._fireDialog("hui-dialog-edit-card", {
         lovelaceConfig: this._virtualLovelace(page),
         saveCardConfig: (config) => {
           if (!config || !config.type) return;
           if (this._dialog === token) this._closeDialog();
+          queue(config);
           if (_containsPage(this._draft, page)) this._applyDialogConfig(page, null, config, at);
         },
         cardConfig: JSON.parse(JSON.stringify(existing)),
@@ -398,6 +444,7 @@ class MemoMindGlassesPanel extends HTMLElement {
           const card = cards[at] || cards[cards.length - 1];
           if (!card || !card.type) return;
           if (this._dialog === token) this._closeDialog();
+          queue(card);
           if (_containsPage(this._draft, page)) this._applyDialogConfig(page, null, card, at);
         },
         path: [0, "cards", at],
@@ -1166,16 +1213,17 @@ class MemoMindGlassesPanel extends HTMLElement {
       button.danger { background:var(--error-color,#c62828); color:#fff; border-color:transparent; }
       .picker { display:flex; gap:6px; margin:6px 0 10px; }
       .picker input { flex:1; }
-      .strip { display:flex; gap:14px; overflow-x:auto; overflow-y:hidden; padding-bottom:10px; align-items:flex-start; }
-      .slot { flex:0 0 auto; width:340px; }
+      .strip { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:14px; overflow:visible; padding-bottom:10px; align-items:start; }
+      @media (max-width:700px){ .strip{grid-template-columns:minmax(0,1fr);} }
+      .slot { min-width:0; }
       .card { max-height:420px; overflow:hidden; display:flex; flex-direction:column; }
       .card .preview { overflow-y:auto; max-height:260px; padding:4px 0; }
       .card-type { font-size:.8rem; text-transform:uppercase; letter-spacing:.04em; color:var(--secondary-text-color,#666); flex:1; }
-      .add-card { flex:0 0 auto; align-self:stretch; min-height:120px; width:140px; }
+      .add-card { align-self:stretch; min-height:120px; }
       .yaml { display:flex; flex-direction:column; gap:8px; }
       .yaml textarea { width:100%; font-family:monospace; font-size:.85rem; padding:8px; border-radius:6px; border:1px solid var(--divider-color,#ccc); background:var(--card-background-color,#fff); color:inherit; }
       .config-fallback { font-size:.75rem; white-space:pre-wrap; margin:0; }
-      .slot.editing { width:420px; }
+      .slot.editing { grid-column:1 / -1; }
       .card-head .card-type { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       .hint { color:var(--secondary-text-color,#666); font-size:.9rem; }
       .save-state { align-self:center; font-size:.85rem; color:var(--secondary-text-color,#666); }
@@ -1376,6 +1424,17 @@ CARD_SUGGESTIONS.push(
   { type: "blank", label: "Autre carte (Home Assistant)", template: null },
 );
 
+// A slot card the picker created but never filled: an entities card with no
+// row and no Lovelace config of its own.
+function _isPlaceholder(card) {
+  if (!card) return true;
+  const type = card.type || card.config?.type || "entities";
+  if (type !== "entities") return false;
+  if ((card.entities || []).length) return false;
+  const config = card.config && typeof card.config === "object" ? card.config : {};
+  return !Object.keys(config).some((key) => key !== "type");
+}
+
 function _containsPage(draft, page) {
   return Boolean(draft && draft.pages && draft.pages.indexOf(page) !== -1);
 }
@@ -1435,11 +1494,6 @@ function parseCardYaml(text) {
   let position = 0;
   const indentOf = (entry) => entry.line.length - entry.line.trimStart().length;
 
-  const nextSignificant = () => lines[position + 1];
-  const opensList = () => {
-    const next = nextSignificant();
-    return Boolean(next) && next.line.trim().startsWith("- ");
-  };
 
   const parseBlock = (indent) => {
     const first = lines[position];
@@ -1469,16 +1523,13 @@ function parseCardYaml(text) {
     return out;
   };
 
+  // YAML lets a block sequence sit at the same indentation as its parent key,
+  // so a dash right after "key:" belongs to that key and not to the map.
   const parseChild = (indent) => {
     if (position >= lines.length) return {};
-    if (indentOf(lines[position]) > indent) {
-      return parseBlock(indentOf(lines[position]));
-    }
-    if (opensList()) {
-      const next = lines[position];
-      if (next && indentOf(next) > indent) return parseList(indentOf(next));
-      return parseList(indent + 2);
-    }
+    const next = lines[position];
+    if (next.line.trim().startsWith("- ")) return parseList(indentOf(next));
+    if (indentOf(next) > indent) return parseBlock(indentOf(next));
     return {};
   };
 
