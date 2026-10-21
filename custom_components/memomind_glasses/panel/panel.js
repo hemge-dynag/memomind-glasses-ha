@@ -1491,9 +1491,6 @@ function loadScriptOnce(url) {
 function readCardYaml(text) {
   const source = decodeYamlText(text).trim();
   if (!source) return { error: "le texte est vide" };
-  if (!/^[\w"'-]+\s*:/m.test(source)) {
-    return { error: "il doit contenir au moins « type: » (une clé par ligne, sans crochets)" };
-  }
   let config = null;
   try {
     config = parseCardYaml(source);
@@ -1510,6 +1507,8 @@ function readCardYaml(text) {
 function decodeYamlText(text) {
   return String(text || "").replace(/\\r\\n|\\n|\\r/g, "\n").replace(/\\t/g, "  ");
 }
+
+const BLOCK_SCALAR_RE = /^[|>][+-]?\d*$/;
 
 function parseCardYaml(text) {
   /* The YAML textarea reports a bare "\n" for a single newline: decode the
@@ -1544,13 +1543,33 @@ function parseCardYaml(text) {
       const key = body.slice(0, separator).trim().replace(/^["']|["']$/g, "");
       const rest = body.slice(separator + 1).trim();
       position += 1;
-      if (rest !== "") {
+      const blockStyle = BLOCK_SCALAR_RE.exec(rest);
+      if (blockStyle) {
+        out[key] = parseBlockScalar(indent, blockStyle[0], entry.number);
+      } else if (rest !== "") {
         out[key] = scalar(rest);
       } else {
         out[key] = parseChild(indent);
       }
     }
     return out;
+  };
+
+  // A literal or folded block (|, |-, |+, >, >-) keeps every following line
+  // that is indented deeper than its key, verbatim: a CSS block pasted from a
+  // custom card must never be read as nested keys.
+  const parseBlockScalar = (indent, style, keyLine) => {
+    const collected = [];
+    let blockIndent = indent;
+    const first = lines[position];
+    if (first && indentOf(first) > indent) blockIndent = indentOf(first);
+    while (position < lines.length && indentOf(lines[position]) > indent) {
+      collected.push(lines[position].line.slice(blockIndent));
+      position += 1;
+    }
+    if (!collected.length) throw new Error(`valeur attendue ligne ${keyLine + 1}`);
+    const body = style === ">" ? collected.join(" ").trim() : collected.join("\n");
+    return style.endsWith("+") ? `${body}\n` : style.endsWith("-") ? body : `${body}`;
   };
 
   // YAML lets a block sequence sit at the same indentation as its parent key,
@@ -1577,7 +1596,12 @@ function parseCardYaml(text) {
         const key = rest.slice(0, separator).trim();
         const value = rest.slice(separator + 1).trim();
         const item = {};
-        if (value !== "") {
+        const blockStyle = BLOCK_SCALAR_RE.exec(value);
+        if (blockStyle) {
+          const keyLine = entry.number;
+          position += 1;
+          item[key] = parseBlockScalar(indent, blockStyle[0], keyLine);
+        } else if (value !== "") {
           item[key] = scalar(value);
           position += 1;
         } else {
