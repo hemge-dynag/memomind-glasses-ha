@@ -119,6 +119,7 @@ class MemoMindGlassesPanel extends HTMLElement {
   }
 
   async _open(index) {
+    if (index !== this._selected) this._pending = [];
     const result = await this._call("GET", `/${index}`);
     if (!result) return;
     this._selected = index;
@@ -664,14 +665,14 @@ class MemoMindGlassesPanel extends HTMLElement {
       add.className = "primary";
       add.textContent = "Ajouter la carte";
       add.onclick = () => {
-        const config = parseCardYaml(area.value || "");
-        if (!config) {
-          state.yamlError = "YAML invalide : il doit contenir au moins « type: ».";
+        const parsed = readCardYaml(area.value || "");
+        if (parsed.error) {
+          state.yamlError = `YAML invalide : ${parsed.error}.`;
           state.yamlText = area.value;
           this._drawDialog();
           return;
         }
-        this._finishCard(state, config);
+        this._finishCard(state, parsed.config);
       };
       actions.append(back, add);
       dialog.append(hint, area, actions);
@@ -973,12 +974,13 @@ class MemoMindGlassesPanel extends HTMLElement {
     let config;
     if (state.yaml) {
       const values = this._dialogValues();
-      config = parseCardYaml(values.yaml || "");
-      if (!config) {
-        this._dialogError = "YAML de carte invalide (il doit contenir au moins « type: »).";
+      const parsed = readCardYaml(values.yaml || "");
+      if (parsed.error) {
+        this._dialogError = `YAML de carte invalide : ${parsed.error}.`;
         this._drawDialog();
         return;
       }
+      config = parsed.config;
     } else {
       config = buildSuggestionConfig(state);
     }
@@ -1484,7 +1486,35 @@ function loadScriptOnce(url) {
   });
 }
 
+// Parses the YAML textarea and says precisely what is wrong when it cannot:
+// the real parser error, or the first line that does not start a card.
+function readCardYaml(text) {
+  const source = decodeYamlText(text).trim();
+  if (!source) return { error: "le texte est vide" };
+  if (!/^[\w"'-]+\s*:/m.test(source)) {
+    return { error: "il doit contenir au moins « type: » (une clé par ligne, sans crochets)" };
+  }
+  let config = null;
+  try {
+    config = parseCardYaml(source);
+  } catch (error) {
+    return { error: String((error && error.message) || error) };
+  }
+  if (!config || !config.type) {
+    return { error: "il doit contenir au moins « type: » (une clé par ligne, sans crochets)" };
+  }
+  return { config };
+}
+
+// Turns the escape sequences a copied card can carry into real line breaks.
+function decodeYamlText(text) {
+  return String(text || "").replace(/\\r\\n|\\n|\\r/g, "\n").replace(/\\t/g, "  ");
+}
+
 function parseCardYaml(text) {
+  /* The YAML textarea reports a bare "\n" for a single newline: decode the
+   * escape sequences a paste can carry, so a card written by hand is parsed
+   * exactly like the same card pasted from Home Assistant. */
   const lines = String(text || "")
     .split("\n")
     .map((line, number) => ({ line: line.replace(/\r$/, ""), number }))
@@ -1574,8 +1604,8 @@ function parseCardYaml(text) {
   try {
     const parsed = parseBlock(indentOf(lines[0]));
     return parsed && typeof parsed === "object" && parsed.type ? parsed : null;
-  } catch (_) {
-    return null;
+  } catch (error) {
+    throw new Error(String((error && error.message) || error));
   }
 }
 
